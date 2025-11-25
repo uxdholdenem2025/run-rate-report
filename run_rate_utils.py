@@ -7,11 +7,11 @@ from plotly.subplots import make_subplots
 from io import BytesIO
 import warnings
 import xlsxwriter
+# --- FIX: Explicitly import date and datetime to prevent NameError ---
 from datetime import datetime, timedelta, date
 
 # ==============================================================================
 # --- 1. CONSTANTS & UTILITY FUNCTIONS ---
-# (Extracted from run_rate_app.py)
 # ==============================================================================
 
 # --- Constants ---
@@ -91,19 +91,36 @@ def load_all_data(files):
         try:
             df = pd.read_excel(file)
             
-            if "TOOLING ID" in df.columns:
-                df.rename(columns={"TOOLING ID": "tool_id"}, inplace=True)
-            elif "EQUIPMENT CODE" in df.columns:
-                df.rename(columns={"EQUIPMENT CODE": "tool_id"}, inplace=True)
-
-            if {"YEAR", "MONTH", "DAY", "TIME"}.issubset(df.columns):
-                datetime_str = df["YEAR"].astype(str) + "-" + df["MONTH"].astype(str) + "-" + df["DAY"].astype(str) + " " + df['TIME'].astype(str)
-                df["shot_time"] = pd.to_datetime(datetime_str, errors="coerce")
-            elif "SHOT TIME" in df.columns:
-                df["shot_time"] = pd.to_datetime(df["SHOT TIME"], errors="coerce")
+            # --- FIX #2: Robust Column Normalization ---
+            # Create a map of normalized (uppercase, stripped) names to original names
+            col_map = {col.strip().upper(): col for col in df.columns}
             
-            if "tool_id" in df.columns:
+            # Helper to find a column regardless of case
+            def get_col(target):
+                return col_map.get(target)
+
+            # Handle Tool ID
+            tool_id_col = get_col("TOOLING ID") or get_col("EQUIPMENT CODE") or get_col("TOOL_ID")
+            if tool_id_col:
+                df.rename(columns={tool_id_col: "tool_id"}, inplace=True)
+
+            # Handle Timestamp
+            if {"YEAR", "MONTH", "DAY", "TIME"}.issubset(set(col_map.keys())):
+                # Reconstruct using the original column names found via the map
+                year_col = get_col("YEAR")
+                month_col = get_col("MONTH")
+                day_col = get_col("DAY")
+                time_col = get_col("TIME")
+                datetime_str = df[year_col].astype(str) + "-" + df[month_col].astype(str) + "-" + df[day_col].astype(str) + " " + df[time_col].astype(str)
+                df["shot_time"] = pd.to_datetime(datetime_str, errors="coerce")
+            else:
+                shot_time_col = get_col("SHOT TIME") or get_col("TIMESTAMP") or get_col("DATE") or get_col("TIME")
+                if shot_time_col:
+                    df["shot_time"] = pd.to_datetime(df[shot_time_col], errors="coerce")
+            
+            if "tool_id" in df.columns and "shot_time" in df.columns:
                 df_list.append(df)
+                
         except Exception as e:
             st.warning(f"Could not load file: {file.name}. Error: {e}")
     
@@ -114,7 +131,6 @@ def load_all_data(files):
 
 # ==============================================================================
 # --- 2. CORE CALCULATION ENGINE ---
-# (Extracted from run_rate_app.py)
 # ==============================================================================
 
 class RunRateCalculator:
@@ -131,13 +147,12 @@ class RunRateCalculator:
     def _prepare_data(self) -> pd.DataFrame:
         """Prepares raw DataFrame by parsing time and calculating initial 'time_diff_sec'."""
         df = self.df_raw.copy()
-        if {"YEAR", "MONTH", "DAY", "TIME"}.issubset(df.columns):
-            datetime_str = df["YEAR"].astype(str) + "-" + df["MONTH"].astype(str) + "-" + df["DAY"].astype(str) + " " + df['TIME'].astype(str)
-            df["shot_time"] = pd.to_datetime(datetime_str, errors="coerce")
-        elif "SHOT TIME" in df.columns:
-            df["shot_time"] = pd.to_datetime(df["SHOT TIME"], errors="coerce")
-        else:
-            return pd.DataFrame()
+        # Note: load_all_data handles the initial loading, but if passing a raw df directly:
+        # We rely on 'shot_time' being present or constructable.
+        # This method acts as a safeguard if the df didn't come from load_all_data
+        if "shot_time" not in df.columns:
+             # Try to construct it similar to load_all_data logic or fail gracefully
+             return pd.DataFrame()
 
         df = df.dropna(subset=["shot_time"]).sort_values("shot_time").reset_index(drop=True)
         if df.empty: return pd.DataFrame()
@@ -161,6 +176,7 @@ class RunRateCalculator:
         hourly_groups = df.groupby('hour')
         stops = hourly_groups['stop_event'].sum()
         
+        # We still use adj_ct_sec for the granular hourly visualization
         hourly_total_downtime_sec = hourly_groups.apply(lambda x: x[x['stop_flag'] == 1]['adj_ct_sec'].sum())
         
         uptime_min = df[df['stop_flag'] == 0].groupby('hour')['ACTUAL CT'].sum() / 60
@@ -381,9 +397,12 @@ def calculate_run_summaries(df_period, tolerance, downtime_gap_tolerance):
             total_shots = res.get('total_shots', 0)
             normal_shots = res.get('normal_shots', 0)
             stopped_shots = total_shots - normal_shots
+            
+            # --- FIX: Use the new consistent calculations ---
             total_runtime_sec = res.get('total_runtime_sec', 0)
             production_time_sec = res.get('production_time_sec', 0)
-            downtime_sec = res.get('downtime_sec', 0)
+            downtime_sec = res.get('downtime_sec', 0) 
+            # ---
             
             summary = {
                 'run_label': run_label,
@@ -414,7 +433,6 @@ def calculate_run_summaries(df_period, tolerance, downtime_gap_tolerance):
 
 # ==============================================================================
 # --- 3. PLOTTING FUNCTIONS ---
-# (Extracted from run_rate_app.py)
 # ==============================================================================
 
 def create_gauge(value, title, steps=None):
@@ -605,7 +623,6 @@ def plot_mttr_mtbf_chart(df, x_col, mttr_col, mtbf_col, shots_col, title):
 
 # ==============================================================================
 # --- 4. TEXT ANALYSIS ENGINE ---
-# (Extracted from run_rate_app.py)
 # ==============================================================================
 
 def generate_detailed_analysis(analysis_df, overall_stability, overall_mttr, overall_mtbf, analysis_level):
@@ -641,7 +658,7 @@ def generate_detailed_analysis(analysis_df, overall_stability, overall_mttr, ove
         worst_performer = analysis_df_clean.loc[analysis_df_clean['stability'].idxmin()]
 
         def format_period(period_value, level):
-            if isinstance(period_value, (pd.Timestamp, pd.Period, pd.Timedelta)):
+            if isinstance(period_value, (pd.Timestamp, pd.Period, pd.Timedelta, date, datetime)):
                 return pd.to_datetime(period_value).strftime('%A, %b %d')
             if level == "Monthly": return f"Week {period_value}"
             if "Daily" in level: return f"{period_value}:00"
@@ -761,7 +778,6 @@ def generate_mttr_mtbf_analysis(analysis_df, analysis_level):
 
 # ==============================================================================
 # --- 5. EXCEL EXPORT MODULE ---
-# (Extracted from run_rate_app.py)
 # ==============================================================================
 
 def generate_excel_report(all_runs_data, tolerance):
@@ -1006,6 +1022,8 @@ def prepare_and_generate_run_based_excel(df_for_export, tolerance, downtime_gap_
                 run_results['lower_limit'] = run_results.get('lower_limit', 0)
                 run_results['upper_limit'] = run_results.get('upper_limit', np.inf)
                 
+                # This 'production_run_sec' is just wall-clock time, but the 'total_runtime_sec'
+                # from the results dict now contains the *correct* calculation
                 run_results['production_run_sec'] = (run_results['end_time'] - run_results['start_time']).total_seconds() if run_id > 0 else run_results.get('total_runtime_sec', 0)
                 
                 run_results['tot_down_time_sec'] = run_results.get('downtime_sec', 0)
@@ -1071,7 +1089,6 @@ def prepare_and_generate_run_based_excel(df_for_export, tolerance, downtime_gap_
 
 # ==============================================================================
 # --- 6. RISK TOWER MODULE ---
-# (Extracted from run_rate_app.py)
 # ==============================================================================
 
 @st.cache_data(show_spinner="Analyzing tool performance for Risk Tower...")
