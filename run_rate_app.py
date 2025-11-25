@@ -89,7 +89,7 @@ def render_dashboard(df_tool, tool_id_selection):
 
     analysis_level = st.sidebar.radio(
         "Select Analysis Level",
-        options=["Daily", "Weekly (by Run)", "Monthly (by Run)", "Custom Period (by Run)"],
+        options=["Daily", "Daily (by Run)", "Weekly (by Run)", "Monthly (by Run)", "Custom Period (by Run)"],
         key="rr_analysis_level"
     )
 
@@ -149,7 +149,7 @@ def render_dashboard(df_tool, tool_id_selection):
     df_view = pd.DataFrame()
 
     # --- Date/Period Selection ---
-    if "Daily" in analysis_level:
+    if "Daily" in analysis_level: # This handles both "Daily" and "Daily (by Run)"
         st.header(f"Daily Analysis {'(by Production Run)' if mode == 'by_run' else ''}")
         available_dates = sorted(df_processed["date"].unique())
         if not available_dates:
@@ -278,11 +278,11 @@ def render_dashboard(df_tool, tool_id_selection):
         trend_summary_df = None
         trend_level = "" 
 
-        if "Daily" in analysis_level:
+        if analysis_level == "Daily": # Strict "Daily" (Hourly analysis)
             trend_level = "Hourly"
             trend_summary_df = results.get('hourly_summary', pd.DataFrame())
         
-        elif "by Run" in analysis_level: 
+        elif "by Run" in analysis_level: # Handles Daily/Weekly/Monthly/Custom (by Run)
             trend_level = "Run"
             trend_summary_df = rr_utils.calculate_run_summaries(df_view, tolerance, downtime_gap_tolerance)
             if trend_summary_df is not None and not trend_summary_df.empty:
@@ -386,13 +386,13 @@ def render_dashboard(df_tool, tool_id_selection):
 
         # --- Breakdown Tables ---
         
-        # 1. Daily View Breakdown (Shows run info even in Daily mode)
-        if "Daily" in analysis_level:
+        # 1. Standard Daily View Breakdown (Hourly)
+        if analysis_level == "Daily":
             st.markdown("### Hourly Breakdown")
             if trend_summary_df is not None and not trend_summary_df.empty:
                 st.dataframe(rr_utils.get_renamed_summary_df(trend_summary_df), use_container_width=True)
             
-            # NEW: Add per-run breakdown for Daily view
+            # We still keep the run breakdown here as requested previously, but it's secondary
             st.markdown("### Run Breakdown (for Selected Day)")
             daily_run_summary = rr_utils.calculate_run_summaries(df_view, tolerance, downtime_gap_tolerance)
             if not daily_run_summary.empty:
@@ -474,7 +474,7 @@ def render_dashboard(df_tool, tool_id_selection):
         st.markdown("---")
         
         # --- Detailed Trend Charts (Dynamic by Analysis Level) ---
-        if "Daily" in analysis_level:
+        if analysis_level == "Daily":
             st.header("Hourly Analysis")
             run_durations_day = results.get("run_durations", pd.DataFrame())
             processed_day_df = results.get('processed_df', pd.DataFrame())
@@ -506,7 +506,8 @@ def render_dashboard(df_tool, tool_id_selection):
                 else: st.info("No complete runs.")
             with c2:
                 rr_utils.plot_trend_chart(trend_summary_df, 'hour', 'stability_index', "Hourly Stability Trend", "Hour of Day", "Stability (%)", is_stability=True)
-                # We already show the hourly breakdown above, no need to repeat expander
+                with st.expander("View Stability Data", expanded=False): 
+                    st.dataframe(rr_utils.get_renamed_summary_df(trend_summary_df))
             
             st.subheader("Hourly Bucket Trend")
             if not complete_runs.empty:
@@ -531,6 +532,8 @@ def render_dashboard(df_tool, tool_id_selection):
                     mtbf_col='mtbf_min', shots_col='total_shots',
                     title="Hourly MTTR & MTBF Trend"
                 )
+                with st.expander("View MTTR/MTBF Data", expanded=False): 
+                    st.dataframe(rr_utils.get_renamed_summary_df(hourly_summary))
                 if detailed_view:
                     with st.expander("🤖 View MTTR/MTBF Correlation Analysis", expanded=False):
                         st.info("""**How this analysis works:** It determines if stability is more affected by many small stops (a **frequency** problem) or a few long stops (a **duration** problem). This helps prioritize engineering efforts.""")
@@ -574,6 +577,8 @@ def render_dashboard(df_tool, tool_id_selection):
                 if summary_df is not None and not summary_df.empty:
                     x_col = 'date' if trend_level == "Daily" else 'week'
                     rr_utils.plot_trend_chart(summary_df, x_col, 'stability_index', f"{trend_level.title()} Stability Trend", trend_level, "Stability (%)", is_stability=True)
+                    with st.expander("View Stability Data", expanded=False): 
+                        st.dataframe(rr_utils.get_renamed_summary_df(summary_df))
                 else: st.info(f"No {trend_level.lower()} data.")
             
             st.subheader(f"{trend_level.title()} Bucket Trend")
@@ -604,6 +609,8 @@ def render_dashboard(df_tool, tool_id_selection):
                     mtbf_col='mtbf_min', shots_col='total_shots',
                     title=f"{trend_level.title()} MTTR, MTBF & Shot Count Trend"
                 )
+                with st.expander("View MTTR/MTBF Data", expanded=False): 
+                    st.dataframe(rr_utils.get_renamed_summary_df(summary_df))
                 if detailed_view:
                     with st.expander("🤖 View MTTR/MTBF Correlation Analysis", expanded=False):
                         st.info("""**How this analysis works:** It determines if stability is more affected by many small stops (a **frequency** problem) or a few long stops (a **duration** problem). This helps prioritize engineering efforts.""")
@@ -616,7 +623,7 @@ def render_dashboard(df_tool, tool_id_selection):
         
         elif "by Run" in analysis_level:
             st.header(f"Run-Based Analysis")
-            run_summary_df = trend_summary_df 
+            run_summary_df = trend_summary_df # This now holds the RENAMED data thanks to the fix
             run_durations = results.get("run_durations", pd.DataFrame())
             processed_df = results.get('processed_df', pd.DataFrame())
             stop_events_df = processed_df.loc[processed_df['stop_event']].copy()
@@ -649,7 +656,10 @@ def render_dashboard(df_tool, tool_id_selection):
             with c2:
                 st.subheader("Stability per Production Run")
                 if run_summary_df is not None and not run_summary_df.empty:
+                    # This call will now succeed because run_summary_df has 'STABILITY %'
                     rr_utils.plot_trend_chart(run_summary_df, 'RUN ID', 'STABILITY %', "Stability per Run", "Run ID", "Stability (%)", is_stability=True)
+                    with st.expander("View Stability Data", expanded=False): 
+                        st.dataframe(rr_utils.get_renamed_summary_df(run_summary_df))
                 else: st.info(f"No runs to analyze.")
             
             st.subheader("Bucket Trend per Production Run")
@@ -679,6 +689,8 @@ def render_dashboard(df_tool, tool_id_selection):
                     mtbf_col='MTBF (min)', shots_col='Total Shots',
                     title="MTTR, MTBF & Shot Count per Run"
                 )
+                with st.expander("View MTTR/MTBF Data", expanded=False): 
+                    st.dataframe(rr_utils.get_renamed_summary_df(run_summary_df))
                 if detailed_view:
                     with st.expander("🤖 View MTTR/MTBF Correlation Analysis", expanded=False):
                         st.info("""**How this analysis works:** It determines if stability is more affected by many small stops (a **frequency** problem) or a few long stops (a **duration** problem). This helps prioritize engineering efforts.""")
