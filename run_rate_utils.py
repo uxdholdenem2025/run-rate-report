@@ -676,7 +676,18 @@ def generate_detailed_analysis(analysis_df, overall_stability, overall_mttr, ove
     if not analysis_df_clean.empty and analysis_df_clean['stops'].sum() > 0:
         if "Daily" in analysis_level:
             peak_stop_hour = analysis_df_clean.loc[analysis_df_clean['stops'].idxmax()]
-            pattern_insight = f"A notable pattern is the concentration of stop events around <strong>{int(peak_stop_hour['period'])}:00</strong>, which saw the highest number of interruptions ({int(peak_stop_hour['stops'])} stops)."
+            # --- FIX: Cast period/stops to float first, then int, to handle string "3.0" values ---
+            try:
+                period_val = int(float(peak_stop_hour['period']))
+            except (ValueError, TypeError):
+                period_val = str(peak_stop_hour['period'])
+                
+            try:
+                stops_val = int(float(peak_stop_hour['stops']))
+            except (ValueError, TypeError):
+                stops_val = 0
+                
+            pattern_insight = f"A notable pattern is the concentration of stop events around <strong>{period_val}:00</strong>, which saw the highest number of interruptions ({stops_val} stops)."
         else:
             mean_stability = analysis_df_clean['stability'].mean()
             std_stability = analysis_df_clean['stability'].std()
@@ -976,115 +987,6 @@ def generate_excel_report(all_runs_data, tolerance):
                     ws.set_column(i, i, len(str(col_name)) + 2)
 
     return output.getvalue()
-
-
-def prepare_and_generate_run_based_excel(df_for_export, tolerance, downtime_gap_tolerance, run_interval_hours, tool_id_selection):
-    """
-    Wrapper function to split data into runs and prepare it for the Excel export.
-    """
-    try:
-        base_calc = RunRateCalculator(df_for_export, tolerance, downtime_gap_tolerance, analysis_mode='aggregate')
-        df_processed = base_calc.results.get("processed_df", pd.DataFrame())
-
-        if df_processed.empty:
-            st.error("Initial processing failed for Excel export.")
-            return BytesIO().getvalue()
-
-        split_col = 'time_diff_sec'
-        if split_col not in df_processed.columns:
-            st.error(f"Required column '{split_col}' not found. Cannot split into runs.")
-            return BytesIO().getvalue()
-
-        is_new_run = df_processed[split_col] > (run_interval_hours * 3600)
-        df_processed['run_id'] = is_new_run.cumsum() + 1
-
-        all_runs_data = {}
-        desired_columns_base = [
-            'SUPPLIER NAME', 'tool_id', 'SESSION ID', 'shot_time',
-            'APPROVED CT', 'ACTUAL CT',
-            'time_diff_sec', 'stop_flag', 'stop_event', 'run_group'
-        ]
-        formula_columns = ['CUMULATIVE COUNT', 'RUN DURATION', 'TIME BUCKET']
-
-        for run_id, df_run_raw in df_processed.groupby('run_id'):
-            try:
-                run_calculator = RunRateCalculator(df_run_raw.copy(), tolerance, downtime_gap_tolerance, analysis_mode='aggregate')
-                run_results = run_calculator.results
-
-                if not run_results or 'processed_df' not in run_results or run_results['processed_df'].empty:
-                    st.warning(f"Skipping empty/invalid Run ID {run_id} for Excel.")
-                    continue
-
-                run_results['equipment_code'] = df_run_raw['tool_id'].iloc[0] if 'tool_id' in df_run_raw.columns and not df_run_raw['tool_id'].empty else tool_id_selection
-                run_results['start_time'] = df_run_raw['shot_time'].min()
-                run_results['end_time'] = df_run_raw['shot_time'].max()
-                run_results['mode_ct'] = run_results.get('mode_ct', 0)
-                run_results['lower_limit'] = run_results.get('lower_limit', 0)
-                run_results['upper_limit'] = run_results.get('upper_limit', np.inf)
-                
-                # This 'production_run_sec' is just wall-clock time, but the 'total_runtime_sec'
-                # from the results dict now contains the *correct* calculation
-                run_results['production_run_sec'] = (run_results['end_time'] - run_results['start_time']).total_seconds() if run_id > 0 else run_results.get('total_runtime_sec', 0)
-                
-                run_results['tot_down_time_sec'] = run_results.get('downtime_sec', 0)
-                run_results['mttr_min'] = run_results.get('mttr_min', 0)
-                run_results['mtbf_min'] = run_results.get('mtbf_min', 0)
-                run_results['time_to_first_dt_min'] = run_results.get('time_to_first_dt_min', 0)
-                run_results['avg_cycle_time_sec'] = run_results.get('avg_cycle_time_sec', 0)
-                if not run_results['processed_df'].empty:
-                     run_results['first_shot_time_diff'] = run_results['processed_df']['time_diff_sec'].iloc[0]
-                else:
-                     run_results['first_shot_time_diff'] = 0
-
-                export_df = run_results['processed_df'].copy()
-                for col in formula_columns:
-                    if col not in export_df.columns:
-                        export_df[col] = ''
-
-                cols_to_keep = [col for col in desired_columns_base if col in export_df.columns]
-                cols_to_keep_final = cols_to_keep + [col for col in formula_columns if col in export_df.columns]
-
-                final_export_df = export_df[list(dict.fromkeys(cols_to_keep_final))].rename(columns={
-                    'tool_id': 'EQUIPMENT CODE', 'shot_time': 'SHOT TIME',
-                    'time_diff_sec': 'TIME DIFF SEC',
-                    'stop_flag': 'STOP', 'stop_event': 'STOP EVENT'
-                })
-
-                final_desired_renamed = [
-                    'SUPPLIER NAME', 'EQUIPMENT CODE', 'SESSION ID',
-                    'Shot Sequence', # <-- Replace SHOT ID
-                    'SHOT TIME',
-                    'APPROVED CT', 'ACTUAL CT',
-                    'TIME DIFF SEC', 'STOP', 'STOP EVENT', 'run_group',
-                    'CUMULATIVE COUNT', 'RUN DURATION', 'TIME BUCKET'
-                ]
-
-                for col in final_desired_renamed:
-                    if col not in final_export_df.columns:
-                        final_export_df[col] = ''
-                final_export_df = final_export_df[[col for col in final_desired_renamed if col in final_export_df.columns]]
-
-                run_results['processed_df'] = final_export_df
-                all_runs_data[run_id] = run_results
-
-            except Exception as e:
-                st.warning(f"Could not process Run ID {run_id} for Excel: {e}")
-                import traceback
-                st.text(traceback.format_exc())
-                continue
-
-        if not all_runs_data:
-            st.error("No valid runs were processed for the Excel export.")
-            return BytesIO().getvalue()
-
-        excel_data = generate_excel_report(all_runs_data, tolerance)
-        return excel_data
-
-    except Exception as e:
-        st.error(f"Error preparing data for run-based Excel export: {e}")
-        import traceback
-        st.text(traceback.format_exc())
-        return BytesIO().getvalue()
 
 
 # ==============================================================================
