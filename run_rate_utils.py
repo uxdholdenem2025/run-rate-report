@@ -676,10 +676,13 @@ def generate_detailed_analysis(analysis_df, overall_stability, overall_mttr, ove
     if not analysis_df_clean.empty and analysis_df_clean['stops'].sum() > 0:
         if "Daily" in analysis_level:
             peak_stop_hour = analysis_df_clean.loc[analysis_df_clean['stops'].idxmax()]
-            # --- FIX: Cast period/stops to float first, then int, to handle string "3.0" values ---
+            
+            # --- FIX: Robust conversion of period and stops to avoid ValueError ---
             try:
+                # First cast to float to handle "3.0", then to int
                 period_val = int(float(peak_stop_hour['period']))
             except (ValueError, TypeError):
+                # Fallback if it's not a number
                 period_val = str(peak_stop_hour['period'])
                 
             try:
