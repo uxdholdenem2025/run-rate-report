@@ -226,6 +226,9 @@ def render_dashboard(df_tool, tool_id_selection):
         # --- Main Calculation for Selected Period ---
         results = {}
         summary_metrics = {}
+        run_summary_df_for_totals = pd.DataFrame() # Initialize to avoid NameError later if logic skips
+        run_summary_df = None # Initialize to avoid NameError
+        trend_summary_df = None # Initialize
 
         # All remaining options are "by Run"
         run_summary_df_for_totals = rr_utils.calculate_run_summaries(df_view, tolerance, downtime_gap_tolerance)
@@ -277,11 +280,11 @@ def render_dashboard(df_tool, tool_id_selection):
             )
             
         # --- Prepare Trend Data ---
-        trend_summary_df = None
-        if "by Run" in analysis_level: 
-            trend_summary_df = rr_utils.calculate_run_summaries(df_view, tolerance, downtime_gap_tolerance)
-            if trend_summary_df is not None and not trend_summary_df.empty:
-                trend_summary_df.rename(columns={'run_label': 'RUN ID', 'stability_index': 'STABILITY %', 'stops': 'STOPS', 'mttr_min': 'MTTR (min)', 'mtbf_min': 'MTBF (min)', 'total_shots': 'Total Shots'}, inplace=True)
+        # We always calculate this now since we removed "Daily" (standard)
+        trend_summary_df = rr_utils.calculate_run_summaries(df_view, tolerance, downtime_gap_tolerance)
+        if trend_summary_df is not None and not trend_summary_df.empty:
+            trend_summary_df.rename(columns={'run_label': 'RUN ID', 'stability_index': 'STABILITY %', 'stops': 'STOPS', 'mttr_min': 'MTTR (min)', 'mtbf_min': 'MTBF (min)', 'total_shots': 'Total Shots'}, inplace=True)
+            run_summary_df = trend_summary_df # Ensure this is available for later tables
 
         # --- 1. KPI Metrics Display ---
         with st.container(border=True):
@@ -293,9 +296,7 @@ def render_dashboard(df_tool, tool_id_selection):
             mttr_val_min = summary_metrics.get('mttr_min', 0)
             mtbf_val_min = summary_metrics.get('mtbf_min', 0)
             
-            mttr_display = rr_utils.format_minutes_to_dhm(mttr_val_min)
-            mtbf_display = rr_utils.format_minutes_to_dhm(mtbf_val_min)
-
+            # Format as 1 decimal place
             with col1: st.metric("Run Rate MTTR", f"{mttr_val_min:.1f} min")
             with col2: st.metric("Run Rate MTBF", f"{mtbf_val_min:.1f} min")
 
