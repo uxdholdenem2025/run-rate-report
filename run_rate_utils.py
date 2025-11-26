@@ -436,14 +436,52 @@ def calculate_run_summaries(df_period, tolerance, downtime_gap_tolerance):
 # ==============================================================================
 
 def create_gauge(value, title, steps=None):
-    """Creates a Plotly gauge chart."""
-    gauge_config = {'axis': {'range': [0, 100]}}
+    """Creates a modern Donut chart (Ring) using Plotly. Replaces old Gauge."""
+    
+    # Determine color based on logic
+    # Default Blue for efficiency
+    color = "#3498DB" 
+    
+    # If steps are provided, this is the Stability Gauge -> Use Red/Orange/Green logic
     if steps:
-        gauge_config['steps'] = steps; gauge_config['bar'] = {'color': '#262730'}
-    else:
-        gauge_config['bar'] = {'color': "darkblue"}; gauge_config['bgcolor'] = "lightgray"
-    fig = go.Figure(go.Indicator(mode="gauge+number", value=value, title={'text': title}, gauge=gauge_config))
-    fig.update_layout(height=250, margin=dict(l=20, r=20, t=50, b=20))
+        if value <= 50: color = PASTEL_COLORS['red']
+        elif value <= 70: color = PASTEL_COLORS['orange']
+        else: color = PASTEL_COLORS['green']
+    
+    # Data for the donut: [Value, Remainder]
+    # We prevent negative values or values > 100 for the chart visual
+    plot_value = max(0, min(value, 100))
+    remainder = 100 - plot_value
+    
+    # Create the chart
+    fig = go.Figure(data=[go.Pie(
+        values=[plot_value, remainder],
+        hole=0.75, # Thickness of ring
+        sort=False,
+        direction='clockwise', # Fills clockwise like a clock
+        textinfo='none',
+        marker=dict(colors=[color, '#e6e6e6']), # Light grey background ring
+        hoverinfo='none'
+    )])
+
+    # Add the Percentage Text in the Center
+    fig.add_annotation(
+        text=f"{value:.1f}%",
+        x=0.5, y=0.5,
+        font=dict(size=42, weight='bold', color=color, family="Arial"),
+        showarrow=False
+    )
+    
+    # Clean Layout
+    fig.update_layout(
+        title=dict(text=title, x=0.5, xanchor='center', y=0.95, font=dict(size=16)),
+        margin=dict(l=20, r=20, t=40, b=20),
+        height=250,
+        showlegend=False,
+        paper_bgcolor='rgba(0,0,0,0)', # Transparent background
+        plot_bgcolor='rgba(0,0,0,0)'
+    )
+    
     return fig
 
 def plot_shot_bar_chart(df, lower_limit, upper_limit, mode_ct, time_agg='hourly'):
