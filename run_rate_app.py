@@ -291,11 +291,9 @@ def render_dashboard(df_tool, tool_id_selection):
             mttr_val_min = summary_metrics.get('mttr_min', 0)
             mtbf_val_min = summary_metrics.get('mtbf_min', 0)
             
-            mttr_display = rr_utils.format_minutes_to_dhm(mttr_val_min)
-            mtbf_display = rr_utils.format_minutes_to_dhm(mtbf_val_min)
-
-            with col1: st.metric("Run Rate MTTR", mttr_display)
-            with col2: st.metric("Run Rate MTBF", mtbf_display)
+            # FORMAT CHANGE: Use f"{value:.1f}" for 1 decimal place
+            with col1: st.metric("Run Rate MTTR", f"{mttr_val_min:.1f} min")
+            with col2: st.metric("Run Rate MTBF", f"{mtbf_val_min:.1f} min")
 
             with col3: st.metric("Total Run Duration", rr_utils.format_duration(total_d)) 
             with col4:
