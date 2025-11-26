@@ -7,10 +7,11 @@ from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import importlib
+import importlib  # <--- ADDED THIS MISSING IMPORT
 
 # Import all logic functions from the utils file
 import run_rate_utils as rr_utils
+importlib.reload(rr_utils) # Forces update of utils on every run
 
 # ==============================================================================
 # --- 1. PAGE CONFIG & SETUP ---
@@ -292,7 +293,9 @@ def render_dashboard(df_tool, tool_id_selection):
             mttr_val_min = summary_metrics.get('mttr_min', 0)
             mtbf_val_min = summary_metrics.get('mtbf_min', 0)
             
-            # FORMAT CHANGE: Use f"{value:.1f}" for 1 decimal place
+            mttr_display = rr_utils.format_minutes_to_dhm(mttr_val_min)
+            mtbf_display = rr_utils.format_minutes_to_dhm(mtbf_val_min)
+
             with col1: st.metric("Run Rate MTTR", f"{mttr_val_min:.1f} min")
             with col2: st.metric("Run Rate MTBF", f"{mtbf_val_min:.1f} min")
 
