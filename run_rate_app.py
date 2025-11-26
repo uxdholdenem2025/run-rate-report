@@ -6,7 +6,6 @@ import streamlit.components.v1 as components
 from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
-# --- FIX: Add missing import for make_subplots ---
 from plotly.subplots import make_subplots
 
 # Import all logic functions from the utils file
@@ -80,20 +79,21 @@ def render_dashboard(df_tool, tool_id_selection):
         - **Bucket Analysis**: Groups run durations into 20-min intervals.
         ---
         ### Analysis Levels
-        - **Daily**: Hourly trends for one day. Also shows individual run breakdown for that day.
-        - **Weekly / Monthly**: Aggregated data, with daily/weekly trend charts.
-        - **Daily / Weekly / Monthly (by Run)**: A more precise analysis where the tolerance for stops is calculated from the Mode CT of each individual production run. A new run is identified after a stoppage longer than the selected 'Run Interval Threshold'.
+        - **Daily (by Run)**: Detailed analysis for a single day, identifying runs based on the 'Run Interval Threshold'.
+        - **Weekly / Monthly (by Run)**: Aggregated data, showing trends over time.
+        - **Custom Period (by Run)**: Analysis for a user-defined date range.
         ---
         ### Sliders
         - **Tolerance Band**: Defines the acceptable CT range around the Mode CT.
         - **Run Interval Threshold**: Defines the max hours between shots before a new Production Run is identified.
-        - **Remove Runs...**: (Only in 'by Run' mode) Filters out runs with fewer shots than the selected value.
+        - **Remove Runs...**: Filters out runs with fewer shots than the selected value.
         """)
         
 
     analysis_level = st.sidebar.radio(
         "Select Analysis Level",
-        options=["Daily", "Daily (by Run)", "Weekly (by Run)", "Monthly (by Run)", "Custom Period (by Run)"],
+        # --- MODIFIED: Removed "Daily" from options ---
+        options=["Daily (by Run)", "Weekly (by Run)", "Monthly (by Run)", "Custom Period (by Run)"],
         key="rr_analysis_level"
     )
 
@@ -117,6 +117,7 @@ def render_dashboard(df_tool, tool_id_selection):
     df_processed = get_processed_data(df_tool, run_interval_hours)
     
     min_shots_filter = 1 
+    # All modes are now effectively "by Run", so we always show the filter option
     if 'by Run' in analysis_level:
         st.sidebar.markdown("---")
         
@@ -149,11 +150,12 @@ def render_dashboard(df_tool, tool_id_selection):
 
     st.title(f"Run Rate Dashboard: {tool_id_selection}")
 
-    mode = 'by_run' if 'by Run' in analysis_level else 'aggregate'
+    # Mode is always 'by_run' now since we removed the standard 'aggregate' Daily option
+    mode = 'by_run'
     df_view = pd.DataFrame()
 
     # --- Date/Period Selection ---
-    if "Daily" in analysis_level: # This handles both "Daily" and "Daily (by Run)"
+    if "Daily" in analysis_level: # Matches "Daily (by Run)"
         st.header(f"Daily Analysis {'(by Production Run)' if mode == 'by_run' else ''}")
         available_dates = sorted(df_processed["date"].unique())
         if not available_dates:
@@ -195,7 +197,7 @@ def render_dashboard(df_tool, tool_id_selection):
     # --- Run Filtering and Labeling ---
     if not df_view.empty:
         df_view = df_view.copy()
-        # Run identification is relevant for BOTH 'by Run' logic AND our new 'Daily' breakdown
+        # Run identification is always relevant now
         if 'run_id' in df_view.columns:
             # Create a consistent integer-based index for runs within the current view
             df_view['run_id_local'] = df_view.groupby('run_id').ngroup()
@@ -224,43 +226,39 @@ def render_dashboard(df_tool, tool_id_selection):
         results = {}
         summary_metrics = {}
 
-        # Decide if we aggregate runs or process holistically
-        if 'by Run' in analysis_level:
-            run_summary_df_for_totals = rr_utils.calculate_run_summaries(df_view, tolerance, downtime_gap_tolerance)
-            
-            if not run_summary_df_for_totals.empty:
-                total_runtime_sec = run_summary_df_for_totals['total_runtime_sec'].sum()
-                production_time_sec = run_summary_df_for_totals['production_time_sec'].sum()
-                downtime_sec = run_summary_df_for_totals['downtime_sec'].sum()
-                total_shots = run_summary_df_for_totals['total_shots'].sum()
-                normal_shots = run_summary_df_for_totals['normal_shots'].sum()
-                stop_events = run_summary_df_for_totals['stops'].sum()
+        # All remaining options are "by Run", so we use the run aggregation logic for totals
+        run_summary_df_for_totals = rr_utils.calculate_run_summaries(df_view, tolerance, downtime_gap_tolerance)
+        
+        if not run_summary_df_for_totals.empty:
+            total_runtime_sec = run_summary_df_for_totals['total_runtime_sec'].sum()
+            production_time_sec = run_summary_df_for_totals['production_time_sec'].sum()
+            downtime_sec = run_summary_df_for_totals['downtime_sec'].sum()
+            total_shots = run_summary_df_for_totals['total_shots'].sum()
+            normal_shots = run_summary_df_for_totals['normal_shots'].sum()
+            stop_events = run_summary_df_for_totals['stops'].sum()
 
-                mttr_min = (downtime_sec / 60 / stop_events) if stop_events > 0 else 0
-                mtbf_min = (production_time_sec / 60 / stop_events) if stop_events > 0 else (production_time_sec / 60)
-                stability_index = (production_time_sec / total_runtime_sec * 100) if total_runtime_sec > 0 else 100.0
-                efficiency = (normal_shots / total_shots) if total_shots > 0 else 0
+            mttr_min = (downtime_sec / 60 / stop_events) if stop_events > 0 else 0
+            mtbf_min = (production_time_sec / 60 / stop_events) if stop_events > 0 else (production_time_sec / 60)
+            stability_index = (production_time_sec / total_runtime_sec * 100) if total_runtime_sec > 0 else 100.0
+            efficiency = (normal_shots / total_shots) if total_shots > 0 else 0
 
-                summary_metrics = {
-                    'total_runtime_sec': total_runtime_sec, 'production_time_sec': production_time_sec,
-                    'downtime_sec': downtime_sec, 'total_shots': total_shots,
-                    'normal_shots': normal_shots, 'stop_events': stop_events,
-                    'mttr_min': mttr_min, 'mtbf_min': mtbf_min,
-                    'stability_index': stability_index, 'efficiency': efficiency,
-                }
-                sub_header = sub_header.replace("Summary for", "Summary for (Combined Runs)")
+            summary_metrics = {
+                'total_runtime_sec': total_runtime_sec, 'production_time_sec': production_time_sec,
+                'downtime_sec': downtime_sec, 'total_shots': total_shots,
+                'normal_shots': normal_shots, 'stop_events': stop_events,
+                'mttr_min': mttr_min, 'mtbf_min': mtbf_min,
+                'stability_index': stability_index, 'efficiency': efficiency,
+            }
+            sub_header = sub_header.replace("Summary for", "Summary for (Combined Runs)")
 
-            calc = rr_utils.RunRateCalculator(df_view.copy(), tolerance, downtime_gap_tolerance, analysis_mode=mode)
-            results = calc.results
-            summary_metrics.update({
-                'min_lower_limit': results.get('min_lower_limit', 0), 'max_lower_limit': results.get('max_lower_limit', 0),
-                'min_mode_ct': results.get('min_mode_ct', 0), 'max_mode_ct': results.get('max_mode_ct', 0),
-                'min_upper_limit': results.get('min_upper_limit', 0), 'max_upper_limit': results.get('max_upper_limit', 0),
-            })
-        else:
-            calc = rr_utils.RunRateCalculator(df_view.copy(), tolerance, downtime_gap_tolerance, analysis_mode=mode)
-            results = calc.results
-            summary_metrics = results
+        # We still calculate the detailed results for plotting/tables
+        calc = rr_utils.RunRateCalculator(df_view.copy(), tolerance, downtime_gap_tolerance, analysis_mode=mode)
+        results = calc.results
+        summary_metrics.update({
+            'min_lower_limit': results.get('min_lower_limit', 0), 'max_lower_limit': results.get('max_lower_limit', 0),
+            'min_mode_ct': results.get('min_mode_ct', 0), 'max_mode_ct': results.get('max_mode_ct', 0),
+            'min_upper_limit': results.get('min_upper_limit', 0), 'max_upper_limit': results.get('max_upper_limit', 0),
+        })
 
         # --- Header & Download Button ---
         col1, col2 = st.columns([3, 1])
@@ -282,27 +280,15 @@ def render_dashboard(df_tool, tool_id_selection):
         trend_summary_df = None
         trend_level = "" 
 
-        if analysis_level == "Daily": # Strict "Daily" (Hourly analysis)
-            trend_level = "Hourly"
-            trend_summary_df = results.get('hourly_summary', pd.DataFrame())
-        
-        elif "by Run" in analysis_level: # Handles Daily/Weekly/Monthly/Custom (by Run)
+        # Since "Daily" standard is removed, "Daily (by Run)" now behaves like other "by Run" options
+        if "by Run" in analysis_level: 
             trend_level = "Run"
             trend_summary_df = rr_utils.calculate_run_summaries(df_view, tolerance, downtime_gap_tolerance)
             if trend_summary_df is not None and not trend_summary_df.empty:
                 trend_summary_df.rename(columns={'run_label': 'RUN ID', 'stability_index': 'STABILITY %', 'stops': 'STOPS', 'mttr_min': 'MTTR (min)', 'mtbf_min': 'MTBF (min)', 'total_shots': 'Total Shots'}, inplace=True)
         
-        elif "Weekly" in analysis_level:
-            trend_level = "Daily"
-            trend_summary_df = rr_utils.calculate_daily_summaries_for_week(df_view, tolerance, downtime_gap_tolerance, mode)
-        
-        elif "Monthly" in analysis_level:
-            trend_level = "Weekly"
-            trend_summary_df = rr_utils.calculate_weekly_summaries_for_month(df_view, tolerance, downtime_gap_tolerance, mode)
-        
-        elif "Custom Period" in analysis_level:
-             trend_level = "Daily"
-             trend_summary_df = rr_utils.calculate_daily_summaries_for_week(df_view, tolerance, downtime_gap_tolerance, mode)
+        # Note: We keep the calculation logic for Weekly/Monthly trends in case they are needed
+        # for aggregated charts even in 'by Run' mode, but the primary view is now Run-Based.
         
 
         # --- KPI Metrics Display ---
@@ -351,21 +337,14 @@ def render_dashboard(df_tool, tool_id_selection):
 
         with st.container(border=True):
             c1, c2, c3 = st.columns(3)
-            if mode == 'by_run':
-                min_ll = summary_metrics.get('min_lower_limit', 0); max_ll = summary_metrics.get('max_lower_limit', 0)
-                c1.metric("Lower Limit Range (sec)", f"{min_ll:.2f} – {max_ll:.2f}")
-                with c2:
-                    min_mc = summary_metrics.get('min_mode_ct', 0); max_mc = summary_metrics.get('max_mode_ct', 0)
-                    with st.container(border=True): st.metric("Mode Cycle Time Range (sec)", f"{min_mc:.2f} – {max_mc:.2f}")
-                min_ul = summary_metrics.get('min_upper_limit', 0); max_ul = summary_metrics.get('max_upper_limit', 0)
-                c3.metric("Upper Limit Range (sec)", f"{min_ul:.2f} – {max_ul:.2f}")
-            else:
-                mode_val = summary_metrics.get('mode_ct', 0)
-                mode_disp = f"{mode_val:.2f}" if isinstance(mode_val, (int,float)) else mode_val
-                c1.metric("Lower Limit (sec)", f"{summary_metrics.get('lower_limit', 0):.2f}")
-                with c2:
-                    with st.container(border=True): st.metric("Mode Cycle Time (sec)", mode_disp)
-                c3.metric("Upper Limit (sec)", f"{summary_metrics.get('upper_limit', 0):.2f}")
+            # Since mode is always 'by_run', we can simplify this logic block
+            min_ll = summary_metrics.get('min_lower_limit', 0); max_ll = summary_metrics.get('max_lower_limit', 0)
+            c1.metric("Lower Limit Range (sec)", f"{min_ll:.2f} – {max_ll:.2f}")
+            with c2:
+                min_mc = summary_metrics.get('min_mode_ct', 0); max_mc = summary_metrics.get('max_mode_ct', 0)
+                with st.container(border=True): st.metric("Mode Cycle Time Range (sec)", f"{min_mc:.2f} – {max_mc:.2f}")
+            min_ul = summary_metrics.get('min_upper_limit', 0); max_ul = summary_metrics.get('max_upper_limit', 0)
+            c3.metric("Upper Limit Range (sec)", f"{min_ul:.2f} – {max_ul:.2f}")
         
         # --- Detailed Analysis Expander ---
         if detailed_view:
@@ -375,10 +354,8 @@ def render_dashboard(df_tool, tool_id_selection):
                 if trend_summary_df is not None and not trend_summary_df.empty:
                     analysis_df = trend_summary_df.copy()
                     rename_map = {}
-                    if 'hour' in analysis_df.columns: rename_map = {'hour': 'period', 'stability_index': 'stability', 'stops': 'stops', 'mttr_min': 'mttr'}
-                    elif 'date' in analysis_df.columns: rename_map = {'date': 'period', 'stability_index': 'stability', 'stops': 'stops', 'mttr_min': 'mttr'}
-                    elif 'week' in analysis_df.columns: rename_map = {'week': 'period', 'stability_index': 'stability', 'stops': 'stops', 'mttr_min': 'mttr'}
-                    elif 'RUN ID' in analysis_df.columns: rename_map = {'RUN ID': 'period', 'STABILITY %': 'stability', 'STOPS': 'stops', 'MTTR (min)': 'mttr'}
+                    # Since we are primarily in 'by Run' mode, we expect RUN ID
+                    if 'RUN ID' in analysis_df.columns: rename_map = {'RUN ID': 'period', 'STABILITY %': 'stability', 'STOPS': 'stops', 'MTTR (min)': 'mttr'}
                     analysis_df.rename(columns=rename_map, inplace=True)
                 
                 insights = rr_utils.generate_detailed_analysis(analysis_df, summary_metrics.get('stability_index', 0), summary_metrics.get('mttr_min', 0), summary_metrics.get('mtbf_min', 0), analysis_level)
@@ -389,19 +366,91 @@ def render_dashboard(df_tool, tool_id_selection):
                     st.components.v1.html(f"""<div style="border:1px solid #333;border-radius:0.5rem;padding:1.5rem;margin-top:1rem;font-family:sans-serif;line-height:1.6;background-color:#0E1117;"><h4 style="margin-top:0;color:#FAFAFA;">Automated Analysis Summary</h4><p style="color:#FAFAFA;"><strong>Overall Assessment:</strong> {insights['overall']}</p><p style="color:#FAFAFA;"><strong>Predictive Trend:</strong> {insights['predictive']}</p><p style="color:#FAFAFA;"><strong>Performance Variance:</strong> {insights['best_worst']}</p> {'<p style="color:#FAFAFA;"><strong>Identified Patterns:</strong> ' + insights['patterns'] + '</p>' if insights['patterns'] else ''}<p style="margin-top:1rem;color:#FAFAFA;background-color:#262730;padding:1rem;border-radius:0.5rem;"><strong>Key Recommendation:</strong> {insights['recommendation']}</p></div>""", height=400, scrolling=True)
 
         # --- Breakdown Tables ---
+        st.markdown("---")
         
-        # 1. Standard Daily View Breakdown (Hourly)
-        if analysis_level == "Daily":
-            st.markdown("### Hourly Breakdown")
-            if trend_summary_df is not None and not trend_summary_df.empty:
-                st.dataframe(rr_utils.get_renamed_summary_df(trend_summary_df), use_container_width=True)
-            
-            # We still keep the run breakdown here as requested previously, but it's secondary
-            st.markdown("### Run Breakdown (for Selected Day)")
-            daily_run_summary = rr_utils.calculate_run_summaries(df_view, tolerance, downtime_gap_tolerance)
-            if not daily_run_summary.empty:
-                d_df = daily_run_summary.copy()
-                d_df["Period (date/time from to)"] = d_df.apply(lambda row: f"{row['start_time'].strftime('%H:%M')} to {row['end_time'].strftime('%H:%M')}", axis=1)
+        # We are now strictly in a "Run-Based" world for the dashboard views.
+        # We display charts and tables that break down performance by Run ID.
+        
+        st.header(f"Run-Based Analysis")
+        run_summary_df = trend_summary_df 
+        run_durations = results.get("run_durations", pd.DataFrame())
+        processed_df = results.get('processed_df', pd.DataFrame())
+        stop_events_df = processed_df.loc[processed_df['stop_event']].copy()
+        complete_runs = pd.DataFrame()
+        if not stop_events_df.empty:
+            stop_events_df['terminated_run_group'] = stop_events_df['run_group'] - 1
+            end_time_map = stop_events_df.set_index('terminated_run_group')['shot_time']
+            run_durations['run_end_time'] = run_durations['run_group'].map(end_time_map)
+            complete_runs = run_durations.dropna(subset=['run_end_time']).copy()
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("Total Bucket Analysis")
+            if not complete_runs.empty and "time_bucket" in complete_runs.columns:
+                b_counts = complete_runs["time_bucket"].value_counts().reindex(results["bucket_labels"], fill_value=0)
+                fig_b = px.bar(b_counts, title="Total Time Bucket Analysis", labels={"index": "Duration (min)", "value": "Occurrences"}, text_auto=True, color=b_counts.index, color_discrete_map=results["bucket_color_map"]).update_layout(legend_title_text='Duration')
+                fig_b.update_xaxes(title_text="Duration (min)")
+                fig_b.update_yaxes(title_text="Occurrences")
+                st.plotly_chart(fig_b, use_container_width=True)
+                with st.expander("View Bucket Data", expanded=False): 
+                    df_bucket_data = complete_runs.copy()
+                    cols_to_show = ['run_group', 'duration_min', 'time_bucket', 'run_end_time', 'run_label']
+                    df_bucket_data = df_bucket_data[[col for col in cols_to_show if col in df_bucket_data.columns]].rename(columns={
+                        'run_group': 'Run Group', 'duration_min': 'Duration (min)',
+                        'time_bucket': 'Time Bucket', 'run_end_time': 'Run End Date/ Time',
+                        'run_label': 'Run ID'
+                    })
+                    st.dataframe(df_bucket_data)
+            else: st.info("No complete runs.")
+        with c2:
+            st.subheader("Stability per Production Run")
+            if run_summary_df is not None and not run_summary_df.empty:
+                rr_utils.plot_trend_chart(run_summary_df, 'RUN ID', 'STABILITY %', "Stability per Run", "Run ID", "Stability (%)", is_stability=True)
+                with st.expander("View Stability Data", expanded=False): 
+                    st.dataframe(rr_utils.get_renamed_summary_df(run_summary_df))
+            else: st.info(f"No runs to analyze.")
+        
+        st.subheader("Bucket Trend per Production Run")
+        if not complete_runs.empty and run_summary_df is not None and not run_summary_df.empty:
+            run_group_to_label_map = processed_df.drop_duplicates('run_group')[['run_group', 'run_label']].set_index('run_group')['run_label']
+            complete_runs['run_label'] = complete_runs['run_group'].map(run_group_to_label_map)
+            pivot_df = pd.crosstab(index=complete_runs['run_label'], columns=complete_runs['time_bucket'].astype('category').cat.set_categories(results["bucket_labels"]))
+            all_runs = run_summary_df['RUN ID']
+            pivot_df = pivot_df.reindex(all_runs, fill_value=0)
+            fig_bucket_trend = make_subplots(specs=[[{"secondary_y": True}]])
+            for col in pivot_df.columns:
+                fig_bucket_trend.add_trace(go.Bar(name=col, x=pivot_df.index, y=pivot_df[col], marker_color=results["bucket_color_map"].get(col)), secondary_y=False)
+            fig_bucket_trend.add_trace(go.Scatter(name='Total Shots', x=run_summary_df['RUN ID'], y=run_summary_df['Total Shots'], mode='lines+markers+text', text=run_summary_df['Total Shots'], textposition='top center', line=dict(color='blue')), secondary_y=True)
+            fig_bucket_trend.update_layout(barmode='stack', title_text='Distribution of Run Durations per Run vs. Shot Count', 
+                                           xaxis_title='Run ID', yaxis_title='Number of Runs', 
+                                           yaxis2_title='Total Shots', legend_title_text='Run Duration (min)')
+            st.plotly_chart(fig_bucket_trend, use_container_width=True)
+            with st.expander("View Bucket Trend Data", expanded=False): st.dataframe(pivot_df)
+            if detailed_view:
+                with st.expander("🤖 View Bucket Trend Analysis", expanded=False):
+                    st.markdown(rr_utils.generate_bucket_analysis(complete_runs, results["bucket_labels"]), unsafe_allow_html=True)
+        
+        st.subheader("MTTR & MTBF per Production Run")
+        if run_summary_df is not None and not run_summary_df.empty and run_summary_df['STOPS'].sum() > 0:
+            rr_utils.plot_mttr_mtbf_chart(
+                df=run_summary_df, x_col='RUN ID', mttr_col='MTTR (min)',
+                mtbf_col='MTBF (min)', shots_col='Total Shots',
+                title="MTTR, MTBF & Shot Count per Run"
+            )
+            with st.expander("View MTTR/MTBF Data", expanded=False): 
+                st.dataframe(rr_utils.get_renamed_summary_df(run_summary_df))
+            if detailed_view:
+                with st.expander("🤖 View MTTR/MTBF Correlation Analysis", expanded=False):
+                    st.info("""**How this analysis works:** It determines if stability is more affected by many small stops (a **frequency** problem) or a few long stops (a **duration** problem). This helps prioritize engineering efforts.""")
+                    analysis_df = run_summary_df.copy().rename(columns={'RUN ID': 'period', 'STABILITY %': 'stability', 'STOPS': 'stops', 'MTTR (min)': 'mttr'})
+                    st.markdown(rr_utils.generate_mttr_mtbf_analysis(analysis_df, analysis_level), unsafe_allow_html=True)
+        
+        # Table View
+        run_summary_df = rr_utils.calculate_run_summaries(df_view, tolerance, downtime_gap_tolerance)
+        with st.expander("View Run Breakdown Table", expanded=False):
+            if run_summary_df is not None and not run_summary_df.empty:
+                d_df = run_summary_df.copy()
+                d_df["Period (date/time from to)"] = d_df.apply(lambda row: f"{row['start_time'].strftime('%Y-%m-%d %H:%M')} to {row['end_time'].strftime('%Y-%m-%d %H:%M')}", axis=1)
                 d_df["Total shots"] = d_df['total_shots'].apply(lambda x: f"{x:,}")
                 d_df["Normal Shots"] = d_df.apply(lambda r: f"{r['normal_shots']:,} ({r['normal_shots']/r['total_shots']*100:.1f}%)" if r['total_shots']>0 else "0 (0.0%)", axis=1)
                 d_df["Stop Events"] = d_df.apply(lambda r: f"{r['stops']} ({r['stopped_shots']/r['total_shots']*100:.1f}%)" if r['total_shots']>0 else "0 (0.0%)", axis=1)
@@ -409,48 +458,14 @@ def render_dashboard(df_tool, tool_id_selection):
                 d_df["Production Time (d/h/m)"] = d_df.apply(lambda r: f"{rr_utils.format_duration(r['production_time_sec'])} ({r['production_time_sec']/r['total_runtime_sec']*100:.1f}%)" if r['total_runtime_sec']>0 else "0m (0.0%)", axis=1)
                 d_df["Downtime (d/h/m)"] = d_df.apply(lambda r: f"{rr_utils.format_duration(r['downtime_sec'])} ({r['downtime_sec']/r['total_runtime_sec']*100:.1f}%)" if r['total_runtime_sec']>0 else "0m (0.0%)", axis=1)
                 d_df.rename(columns={
-                    'run_label':'RUN ID', 'mode_ct':'Mode CT',
-                    'lower_limit':'Lower Limit', 'upper_limit':'Upper Limit',
+                    'run_label':'RUN ID', 'mode_ct':'Mode CT (for the run)',
+                    'lower_limit':'Lower limit CT (sec)', 'upper_limit':'Upper Limit CT (sec)',
                     'mttr_min':'MTTR (min)', 'mtbf_min':'MTBF (min)',
                     'stability_index':'Stability (%)', 'stops':'STOPS'
                     }, inplace=True)
-                final_cols = ['RUN ID','Period (date/time from to)','Total shots','Normal Shots','Stop Events','Mode CT','Lower Limit','Upper Limit','Total Run duration (d/h/m)','Production Time (d/h/m)','Downtime (d/h/m)','MTTR (min)','MTBF (min)','Stability (%)']
+                final_cols = ['RUN ID','Period (date/time from to)','Total shots','Normal Shots','Stop Events','Mode CT (for the run)','Lower limit CT (sec)','Upper Limit CT (sec)','Total Run duration (d/h/m)','Production Time (d/h/m)','Downtime (d/h/m)','MTTR (min)','MTBF (min)','Stability (%)']
                 final_cols = [col for col in final_cols if col in d_df.columns]
-                st.dataframe(d_df[final_cols].style.format({'Mode CT':'{:.2f}','Lower Limit':'{:.2f}','Upper Limit':'{:.2f}','MTTR (min)':'{:.1f}','MTBF (min)':'{:.1f}','Stability (%)':'{:.1f}'}), use_container_width=True)
-            else:
-                st.info("No runs detected in this day.")
-
-        # 2. Other Views Breakdown
-        elif analysis_level in ["Weekly", "Monthly", "Custom Period"] and "by Run" not in analysis_level:
-            with st.expander(f"View {trend_level.title()} Breakdown Table", expanded=False):
-                if trend_summary_df is not None and not trend_summary_df.empty:
-                    d_df = trend_summary_df.copy()
-                    if 'date' in d_df.columns:
-                        d_df['date'] = pd.to_datetime(d_df['date']).dt.strftime('%A, %b %d')
-                    d_df = rr_utils.get_renamed_summary_df(d_df)
-                    st.dataframe(d_df.style.format({'Stability Index (%)': '{:.1f}', 'MTTR (min)': '{:.1f}', 'MTBF (min)': '{:.1f}'}), use_container_width=True)
-        
-        elif "by Run" in analysis_level:
-            run_summary_df = rr_utils.calculate_run_summaries(df_view, tolerance, downtime_gap_tolerance)
-            with st.expander("View Run Breakdown Table", expanded=False):
-                if run_summary_df is not None and not run_summary_df.empty:
-                    d_df = run_summary_df.copy()
-                    d_df["Period (date/time from to)"] = d_df.apply(lambda row: f"{row['start_time'].strftime('%Y-%m-%d %H:%M')} to {row['end_time'].strftime('%Y-%m-%d %H:%M')}", axis=1)
-                    d_df["Total shots"] = d_df['total_shots'].apply(lambda x: f"{x:,}")
-                    d_df["Normal Shots"] = d_df.apply(lambda r: f"{r['normal_shots']:,} ({r['normal_shots']/r['total_shots']*100:.1f}%)" if r['total_shots']>0 else "0 (0.0%)", axis=1)
-                    d_df["Stop Events"] = d_df.apply(lambda r: f"{r['stops']} ({r['stopped_shots']/r['total_shots']*100:.1f}%)" if r['total_shots']>0 else "0 (0.0%)", axis=1)
-                    d_df["Total Run duration (d/h/m)"] = d_df['total_runtime_sec'].apply(rr_utils.format_duration)
-                    d_df["Production Time (d/h/m)"] = d_df.apply(lambda r: f"{rr_utils.format_duration(r['production_time_sec'])} ({r['production_time_sec']/r['total_runtime_sec']*100:.1f}%)" if r['total_runtime_sec']>0 else "0m (0.0%)", axis=1)
-                    d_df["Downtime (d/h/m)"] = d_df.apply(lambda r: f"{rr_utils.format_duration(r['downtime_sec'])} ({r['downtime_sec']/r['total_runtime_sec']*100:.1f}%)" if r['total_runtime_sec']>0 else "0m (0.0%)", axis=1)
-                    d_df.rename(columns={
-                        'run_label':'RUN ID', 'mode_ct':'Mode CT (for the run)',
-                        'lower_limit':'Lower limit CT (sec)', 'upper_limit':'Upper Limit CT (sec)',
-                        'mttr_min':'MTTR (min)', 'mtbf_min':'MTBF (min)',
-                        'stability_index':'Stability (%)', 'stops':'STOPS'
-                        }, inplace=True)
-                    final_cols = ['RUN ID','Period (date/time from to)','Total shots','Normal Shots','Stop Events','Mode CT (for the run)','Lower limit CT (sec)','Upper Limit CT (sec)','Total Run duration (d/h/m)','Production Time (d/h/m)','Downtime (d/h/m)','MTTR (min)','MTBF (min)','Stability (%)']
-                    final_cols = [col for col in final_cols if col in d_df.columns]
-                    st.dataframe(d_df[final_cols].style.format({'Mode CT (for the run)':'{:.2f}','Lower limit CT (sec)':'{:.2f}','Upper Limit CT (sec)':'{:.2f}','MTTR (min)':'{:.1f}','MTBF (min)':'{:.1f}','Stability (%)':'{:.1f}'}), use_container_width=True)
+                st.dataframe(d_df[final_cols].style.format({'Mode CT (for the run)':'{:.2f}','Lower limit CT (sec)':'{:.2f}','Upper Limit CT (sec)':'{:.2f}','MTTR (min)':'{:.1f}','MTBF (min)':'{:.1f}','Stability (%)':'{:.1f}'}), use_container_width=True)
         
         # --- Main Shot Bar Chart ---
         time_agg = 'hourly' if "Daily" in analysis_level else 'daily' if 'Weekly' in analysis_level else 'weekly'
@@ -474,232 +489,6 @@ def render_dashboard(df_tool, tool_id_selection):
             df_shot_data = results['processed_df'][cols_to_show].copy()
             df_shot_data.rename(columns=rename_map, inplace=True)
             st.dataframe(df_shot_data)
-        
-        st.markdown("---")
-        
-        # --- Detailed Trend Charts (Dynamic by Analysis Level) ---
-        if analysis_level == "Daily":
-            st.header("Hourly Analysis")
-            run_durations_day = results.get("run_durations", pd.DataFrame())
-            processed_day_df = results.get('processed_df', pd.DataFrame())
-            stop_events_df = processed_day_df.loc[processed_day_df['stop_event']].copy()
-            complete_runs = pd.DataFrame()
-            if not stop_events_df.empty:
-                stop_events_df['terminated_run_group'] = stop_events_df['run_group'] - 1
-                end_time_map = stop_events_df.set_index('terminated_run_group')['shot_time']
-                run_durations_day['run_end_time'] = run_durations_day['run_group'].map(end_time_map)
-                complete_runs = run_durations_day.dropna(subset=['run_end_time']).copy()
-            else: complete_runs = run_durations_day
-            
-            c1,c2 = st.columns(2)
-            with c1:
-                if not complete_runs.empty and "time_bucket" in complete_runs.columns:
-                    b_counts = complete_runs["time_bucket"].value_counts().reindex(results["bucket_labels"], fill_value=0)
-                    fig_b = px.bar(b_counts, title="Time Bucket Analysis (Completed Runs)", labels={"index": "Duration (min)", "value": "Occurrences"}, text_auto=True, color=b_counts.index, color_discrete_map=results["bucket_color_map"]).update_layout(legend_title_text='Duration')
-                    fig_b.update_xaxes(title_text="Duration (min)")
-                    fig_b.update_yaxes(title_text="Occurrences")
-                    st.plotly_chart(fig_b, use_container_width=True)
-                    with st.expander("View Bucket Data", expanded=False): 
-                        df_bucket_data = complete_runs.copy()
-                        cols_to_show = ['run_group', 'duration_min', 'time_bucket', 'run_end_time']
-                        df_bucket_data = df_bucket_data[[col for col in cols_to_show if col in df_bucket_data.columns]].rename(columns={
-                            'run_group': 'Run Group', 'duration_min': 'Duration (min)',
-                            'time_bucket': 'Time Bucket', 'run_end_time': 'Run End Date/ Time'
-                        })
-                        st.dataframe(df_bucket_data)
-                else: st.info("No complete runs.")
-            with c2:
-                rr_utils.plot_trend_chart(trend_summary_df, 'hour', 'stability_index', "Hourly Stability Trend", "Hour of Day", "Stability (%)", is_stability=True)
-                with st.expander("View Stability Data", expanded=False): 
-                    st.dataframe(rr_utils.get_renamed_summary_df(trend_summary_df))
-            
-            st.subheader("Hourly Bucket Trend")
-            if not complete_runs.empty:
-                complete_runs['hour'] = complete_runs['run_end_time'].dt.hour
-                pivot_df = pd.crosstab(index=complete_runs['hour'], columns=complete_runs['time_bucket'].astype('category').cat.set_categories(results["bucket_labels"]))
-                pivot_df = pivot_df.reindex(pd.Index(range(24), name='hour'), fill_value=0)
-                fig_hourly_bucket = px.bar(pivot_df, x=pivot_df.index, y=pivot_df.columns, 
-                                           title='Hourly Distribution of Run Durations', barmode='stack', 
-                                           color_discrete_map=results["bucket_color_map"], 
-                                           labels={'hour': 'Hour', 'value': 'Number of Buckets', 'variable': 'Run Duration (min)'})
-                st.plotly_chart(fig_hourly_bucket, use_container_width=True)
-                with st.expander("View Bucket Trend Data", expanded=False): st.dataframe(pivot_df)
-                if detailed_view:
-                    with st.expander("🤖 View Bucket Trend Analysis", expanded=False):
-                        st.markdown(rr_utils.generate_bucket_analysis(complete_runs, results["bucket_labels"]), unsafe_allow_html=True)
-            
-            st.subheader("Hourly MTTR & MTBF Trend")
-            hourly_summary = results.get('hourly_summary')
-            if hourly_summary is not None and not hourly_summary.empty and hourly_summary['stops'].sum() > 0:
-                rr_utils.plot_mttr_mtbf_chart(
-                    df=hourly_summary, x_col='hour', mttr_col='mttr_min',
-                    mtbf_col='mtbf_min', shots_col='total_shots',
-                    title="Hourly MTTR & MTBF Trend"
-                )
-                with st.expander("View MTTR/MTBF Data", expanded=False): 
-                    st.dataframe(rr_utils.get_renamed_summary_df(hourly_summary))
-                if detailed_view:
-                    with st.expander("🤖 View MTTR/MTBF Correlation Analysis", expanded=False):
-                        st.info("""**How this analysis works:** It determines if stability is more affected by many small stops (a **frequency** problem) or a few long stops (a **duration** problem). This helps prioritize engineering efforts.""")
-                        analysis_df = hourly_summary.copy().rename(columns={'hour': 'period', 'stability_index': 'stability', 'stops': 'stops', 'mttr_min': 'mttr'})
-                        st.markdown(rr_utils.generate_mttr_mtbf_analysis(analysis_df, analysis_level), unsafe_allow_html=True)
-        
-        elif analysis_level in ["Weekly", "Monthly", "Custom Period"]:
-            trend_level = "Daily" if "Weekly" in analysis_level else "Weekly" if "Monthly" in analysis_level else "Daily"
-            st.header(f"{trend_level.title()} Trends for {analysis_level.split(' ')[0]}")
-            summary_df = trend_summary_df
-            run_durations = results.get("run_durations", pd.DataFrame())
-            processed_df = results.get('processed_df', pd.DataFrame())
-            stop_events_df = processed_df.loc[processed_df['stop_event']].copy()
-            complete_runs = pd.DataFrame()
-            if not stop_events_df.empty:
-                stop_events_df['terminated_run_group'] = stop_events_df['run_group'] - 1
-                end_time_map = stop_events_df.set_index('terminated_run_group')['shot_time']
-                run_durations['run_end_time'] = run_durations['run_group'].map(end_time_map)
-                complete_runs = run_durations.dropna(subset=['run_end_time']).copy()
-            
-            c1, c2 = st.columns(2)
-            with c1:
-                st.subheader("Total Bucket Analysis")
-                if not complete_runs.empty and "time_bucket" in complete_runs.columns:
-                    b_counts = complete_runs["time_bucket"].value_counts().reindex(results["bucket_labels"], fill_value=0)
-                    fig_b = px.bar(b_counts, title="Total Time Bucket Analysis", labels={"index": "Duration (min)", "value": "Occurrences"}, text_auto=True, color=b_counts.index, color_discrete_map=results["bucket_color_map"]).update_layout(legend_title_text='Duration')
-                    fig_b.update_xaxes(title_text="Duration (min)")
-                    fig_b.update_yaxes(title_text="Occurrences")
-                    st.plotly_chart(fig_b, use_container_width=True)
-                    with st.expander("View Bucket Data", expanded=False): 
-                        df_bucket_data = complete_runs.copy()
-                        cols_to_show = ['run_group', 'duration_min', 'time_bucket', 'run_end_time']
-                        df_bucket_data = df_bucket_data[[col for col in cols_to_show if col in df_bucket_data.columns]].rename(columns={
-                            'run_group': 'Run Group', 'duration_min': 'Duration (min)',
-                            'time_bucket': 'Time Bucket', 'run_end_time': 'Run End Date/ Time'
-                        })
-                        st.dataframe(df_bucket_data)
-                else: st.info("No complete runs.")
-            with c2:
-                st.subheader(f"{trend_level.title()} Stability Trend")
-                if summary_df is not None and not summary_df.empty:
-                    x_col = 'date' if trend_level == "Daily" else 'week'
-                    rr_utils.plot_trend_chart(summary_df, x_col, 'stability_index', f"{trend_level.title()} Stability Trend", trend_level, "Stability (%)", is_stability=True)
-                    with st.expander("View Stability Data", expanded=False): 
-                        st.dataframe(rr_utils.get_renamed_summary_df(summary_df))
-                else: st.info(f"No {trend_level.lower()} data.")
-            
-            st.subheader(f"{trend_level.title()} Bucket Trend")
-            if not complete_runs.empty and summary_df is not None and not summary_df.empty:
-                time_col = 'date' if trend_level == "Daily" else 'week'
-                complete_runs[time_col] = complete_runs['run_end_time'].dt.date if trend_level == "Daily" else complete_runs['run_end_time'].dt.isocalendar().week
-                pivot_df = pd.crosstab(index=complete_runs[time_col], columns=complete_runs['time_bucket'].astype('category').cat.set_categories(results["bucket_labels"]))
-                all_units = summary_df[time_col]
-                pivot_df = pivot_df.reindex(all_units, fill_value=0)
-                fig_bucket_trend = make_subplots(specs=[[{"secondary_y": True}]])
-                for col in pivot_df.columns:
-                    fig_bucket_trend.add_trace(go.Bar(name=col, x=pivot_df.index, y=pivot_df[col], marker_color=results["bucket_color_map"].get(col)), secondary_y=False)
-                fig_bucket_trend.add_trace(go.Scatter(name='Total Shots', x=summary_df[time_col], y=summary_df['total_shots'], mode='lines+markers+text', text=summary_df['total_shots'], textposition='top center', line=dict(color='blue')), secondary_y=True)
-                fig_bucket_trend.update_layout(barmode='stack', title_text=f'{trend_level.title()} Distribution of Run Durations vs. Shot Count', 
-                                               xaxis_title=trend_level.title(), yaxis_title='Number of Runs', 
-                                               yaxis2_title='Total Shots', legend_title_text='Run Duration (min)')
-                st.plotly_chart(fig_bucket_trend, use_container_width=True)
-                with st.expander("View Bucket Trend Data", expanded=False): st.dataframe(pivot_df)
-                if detailed_view:
-                    with st.expander("🤖 View Bucket Trend Analysis", expanded=False):
-                        st.markdown(rr_utils.generate_bucket_analysis(complete_runs, results["bucket_labels"]), unsafe_allow_html=True)
-            
-            st.subheader(f"{trend_level.title()} MTTR & MTBF Trend")
-            if summary_df is not None and not summary_df.empty and summary_df['stops'].sum() > 0:
-                x_col = 'date' if trend_level == "Daily" else 'week'
-                rr_utils.plot_mttr_mtbf_chart(
-                    df=summary_df, x_col=x_col, mttr_col='mttr_min',
-                    mtbf_col='mtbf_min', shots_col='total_shots',
-                    title=f"{trend_level.title()} MTTR, MTBF & Shot Count Trend"
-                )
-                with st.expander("View MTTR/MTBF Data", expanded=False): 
-                    st.dataframe(rr_utils.get_renamed_summary_df(summary_df))
-                if detailed_view:
-                    with st.expander("🤖 View MTTR/MTBF Correlation Analysis", expanded=False):
-                        st.info("""**How this analysis works:** It determines if stability is more affected by many small stops (a **frequency** problem) or a few long stops (a **duration** problem). This helps prioritize engineering efforts.""")
-                        analysis_df = summary_df.copy()
-                        rename_map = {}
-                        if 'date' in analysis_df.columns: rename_map = {'date': 'period', 'stability_index': 'stability', 'stops': 'stops', 'mttr_min': 'mttr'}
-                        elif 'week' in analysis_df.columns: rename_map = {'week': 'period', 'stability_index': 'stability', 'stops': 'stops', 'mttr_min': 'mttr'}
-                        analysis_df.rename(columns=rename_map, inplace=True)
-                        st.markdown(rr_utils.generate_mttr_mtbf_analysis(analysis_df, analysis_level), unsafe_allow_html=True)
-        
-        elif "by Run" in analysis_level:
-            st.header(f"Run-Based Analysis")
-            run_summary_df = trend_summary_df # This now holds the RENAMED data thanks to the fix
-            run_durations = results.get("run_durations", pd.DataFrame())
-            processed_df = results.get('processed_df', pd.DataFrame())
-            stop_events_df = processed_df.loc[processed_df['stop_event']].copy()
-            complete_runs = pd.DataFrame()
-            if not stop_events_df.empty:
-                stop_events_df['terminated_run_group'] = stop_events_df['run_group'] - 1
-                end_time_map = stop_events_df.set_index('terminated_run_group')['shot_time']
-                run_durations['run_end_time'] = run_durations['run_group'].map(end_time_map)
-                complete_runs = run_durations.dropna(subset=['run_end_time']).copy()
-            
-            c1, c2 = st.columns(2)
-            with c1:
-                st.subheader("Total Bucket Analysis")
-                if not complete_runs.empty and "time_bucket" in complete_runs.columns:
-                    b_counts = complete_runs["time_bucket"].value_counts().reindex(results["bucket_labels"], fill_value=0)
-                    fig_b = px.bar(b_counts, title="Total Time Bucket Analysis", labels={"index": "Duration (min)", "value": "Occurrences"}, text_auto=True, color=b_counts.index, color_discrete_map=results["bucket_color_map"]).update_layout(legend_title_text='Duration')
-                    fig_b.update_xaxes(title_text="Duration (min)")
-                    fig_b.update_yaxes(title_text="Occurrences")
-                    st.plotly_chart(fig_b, use_container_width=True)
-                    with st.expander("View Bucket Data", expanded=False): 
-                        df_bucket_data = complete_runs.copy()
-                        cols_to_show = ['run_group', 'duration_min', 'time_bucket', 'run_end_time', 'run_label']
-                        df_bucket_data = df_bucket_data[[col for col in cols_to_show if col in df_bucket_data.columns]].rename(columns={
-                            'run_group': 'Run Group', 'duration_min': 'Duration (min)',
-                            'time_bucket': 'Time Bucket', 'run_end_time': 'Run End Date/ Time',
-                            'run_label': 'Run ID'
-                        })
-                        st.dataframe(df_bucket_data)
-                else: st.info("No complete runs.")
-            with c2:
-                st.subheader("Stability per Production Run")
-                if run_summary_df is not None and not run_summary_df.empty:
-                    # This call will now succeed because run_summary_df has 'STABILITY %'
-                    rr_utils.plot_trend_chart(run_summary_df, 'RUN ID', 'STABILITY %', "Stability per Run", "Run ID", "Stability (%)", is_stability=True)
-                    with st.expander("View Stability Data", expanded=False): 
-                        st.dataframe(rr_utils.get_renamed_summary_df(run_summary_df))
-                else: st.info(f"No runs to analyze.")
-            
-            st.subheader("Bucket Trend per Production Run")
-            if not complete_runs.empty and run_summary_df is not None and not run_summary_df.empty:
-                run_group_to_label_map = processed_df.drop_duplicates('run_group')[['run_group', 'run_label']].set_index('run_group')['run_label']
-                complete_runs['run_label'] = complete_runs['run_group'].map(run_group_to_label_map)
-                pivot_df = pd.crosstab(index=complete_runs['run_label'], columns=complete_runs['time_bucket'].astype('category').cat.set_categories(results["bucket_labels"]))
-                all_runs = run_summary_df['RUN ID']
-                pivot_df = pivot_df.reindex(all_runs, fill_value=0)
-                fig_bucket_trend = make_subplots(specs=[[{"secondary_y": True}]])
-                for col in pivot_df.columns:
-                    fig_bucket_trend.add_trace(go.Bar(name=col, x=pivot_df.index, y=pivot_df[col], marker_color=results["bucket_color_map"].get(col)), secondary_y=False)
-                fig_bucket_trend.add_trace(go.Scatter(name='Total Shots', x=run_summary_df['RUN ID'], y=run_summary_df['Total Shots'], mode='lines+markers+text', text=run_summary_df['Total Shots'], textposition='top center', line=dict(color='blue')), secondary_y=True)
-                fig_bucket_trend.update_layout(barmode='stack', title_text='Distribution of Run Durations per Run vs. Shot Count', 
-                                               xaxis_title='Run ID', yaxis_title='Number of Runs', 
-                                               yaxis2_title='Total Shots', legend_title_text='Run Duration (min)')
-                st.plotly_chart(fig_bucket_trend, use_container_width=True)
-                with st.expander("View Bucket Trend Data", expanded=False): st.dataframe(pivot_df)
-                if detailed_view:
-                    with st.expander("🤖 View Bucket Trend Analysis", expanded=False):
-                        st.markdown(rr_utils.generate_bucket_analysis(complete_runs, results["bucket_labels"]), unsafe_allow_html=True)
-            
-            st.subheader("MTTR & MTBF per Production Run")
-            if run_summary_df is not None and not run_summary_df.empty and run_summary_df['STOPS'].sum() > 0:
-                rr_utils.plot_mttr_mtbf_chart(
-                    df=run_summary_df, x_col='RUN ID', mttr_col='MTTR (min)',
-                    mtbf_col='MTBF (min)', shots_col='Total Shots',
-                    title="MTTR, MTBF & Shot Count per Run"
-                )
-                with st.expander("View MTTR/MTBF Data", expanded=False): 
-                    st.dataframe(rr_utils.get_renamed_summary_df(run_summary_df))
-                if detailed_view:
-                    with st.expander("🤖 View MTTR/MTBF Correlation Analysis", expanded=False):
-                        st.info("""**How this analysis works:** It determines if stability is more affected by many small stops (a **frequency** problem) or a few long stops (a **duration** problem). This helps prioritize engineering efforts.""")
-                        analysis_df = run_summary_df.copy().rename(columns={'RUN ID': 'period', 'STABILITY %': 'stability', 'STOPS': 'stops', 'MTTR (min)': 'mttr'})
-                        st.markdown(rr_utils.generate_mttr_mtbf_analysis(analysis_df, analysis_level), unsafe_allow_html=True)
 
 # ==============================================================================
 # --- 8. MAIN APP ENTRY POINT ---
