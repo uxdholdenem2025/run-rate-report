@@ -380,9 +380,22 @@ def render_dashboard(df_tool, tool_id_selection):
 
         st.markdown("---")
         
-        # --- 4. Run-Based Analysis Section ---
-        st.header(f"Run-Based Analysis")
-        run_summary_df = trend_summary_df 
+        # --- 4. Detailed Analysis Section (Run/Hour Switch) ---
+        
+        # Default view mode
+        analysis_view_mode = "Run"
+        
+        # Only show the toggle if we are in Daily mode
+        if analysis_level == "Daily (by Run)":
+            c_head, c_view = st.columns([3,1])
+            with c_head:
+                st.header("Detailed Analysis")
+            with c_view:
+                analysis_view_mode = st.selectbox("Group By", ["Run", "Hour"], key="rr_view_mode")
+        else:
+             st.header(f"Run-Based Analysis")
+
+        # --- Prepare Data for Charts (re-used) ---
         run_durations = results.get("run_durations", pd.DataFrame())
         processed_df = results.get('processed_df', pd.DataFrame())
         stop_events_df = processed_df.loc[processed_df['stop_event']].copy()
@@ -392,130 +405,180 @@ def render_dashboard(df_tool, tool_id_selection):
             end_time_map = stop_events_df.set_index('terminated_run_group')['shot_time']
             run_durations['run_end_time'] = run_durations['run_group'].map(end_time_map)
             complete_runs = run_durations.dropna(subset=['run_end_time']).copy()
-        
-        # --- 4a. Run Breakdown Table ---
-        with st.expander("View Run Breakdown Table", expanded=True):
-            if run_summary_df is not None and not run_summary_df.empty:
-                d_df = run_summary_df.copy()
-                d_df["Period (date/time from to)"] = d_df.apply(lambda row: f"{row['start_time'].strftime('%Y-%m-%d %H:%M')} to {row['end_time'].strftime('%Y-%m-%d %H:%M')}", axis=1)
-                
-                # --- FIX: Handle renamed column from trend_summary_df ---
-                # 'total_shots' was renamed to 'Total Shots' in the previous step
-                # We need to check which one exists
-                if 'Total Shots' in d_df.columns:
-                    d_df["Total shots"] = d_df['Total Shots'].apply(lambda x: f"{x:,}")
-                elif 'total_shots' in d_df.columns:
-                    d_df["Total shots"] = d_df['total_shots'].apply(lambda x: f"{x:,}")
 
-                d_df["Normal Shots"] = d_df.apply(lambda r: f"{r['normal_shots']:,} ({r['normal_shots']/r['total_shots']*100:.1f}%)" if 'total_shots' in r and r['total_shots']>0 else (f"{r['normal_shots']:,} ({r['normal_shots']/r['Total Shots']*100:.1f}%)" if 'Total Shots' in r and r['Total Shots']>0 else "0 (0.0%)"), axis=1)
-                
-                # Need to ensure 'stopped_shots' is available (it might not be in the renamed trend_summary_df)
-                # We can recalculate it: Total - Normal
-                if 'stopped_shots' not in d_df.columns:
+        # --- Option A: Run-Based View ---
+        if analysis_view_mode == "Run":
+            
+            # --- 4a. Run Breakdown Table ---
+            with st.expander("View Run Breakdown Table", expanded=True):
+                if run_summary_df is not None and not run_summary_df.empty:
+                    d_df = run_summary_df.copy()
+                    d_df["Period (date/time from to)"] = d_df.apply(lambda row: f"{row['start_time'].strftime('%Y-%m-%d %H:%M')} to {row['end_time'].strftime('%Y-%m-%d %H:%M')}", axis=1)
+                    
+                    # Handle total shots
                     if 'Total Shots' in d_df.columns:
-                        d_df['stopped_shots'] = d_df['Total Shots'] - d_df['normal_shots']
+                        d_df["Total shots"] = d_df['Total Shots'].apply(lambda x: f"{x:,}")
                     elif 'total_shots' in d_df.columns:
-                        d_df['stopped_shots'] = d_df['total_shots'] - d_df['normal_shots']
+                        d_df["Total shots"] = d_df['total_shots'].apply(lambda x: f"{x:,}")
 
-                # Handle 'stops' vs 'STOPS'
-                stops_col = 'STOPS' if 'STOPS' in d_df.columns else 'stops'
-                
-                # Handle total shots column for calculation
-                total_shots_col = 'Total Shots' if 'Total Shots' in d_df.columns else 'total_shots'
+                    # Handle normal shots %
+                    d_df["Normal Shots"] = d_df.apply(lambda r: f"{r['normal_shots']:,} ({r['normal_shots']/r['total_shots']*100:.1f}%)" if 'total_shots' in r and r['total_shots']>0 else (f"{r['normal_shots']:,} ({r['normal_shots']/r['Total Shots']*100:.1f}%)" if 'Total Shots' in r and r['Total Shots']>0 else "0 (0.0%)"), axis=1)
+                    
+                    # Recalculate stopped_shots if missing
+                    if 'stopped_shots' not in d_df.columns:
+                        if 'Total Shots' in d_df.columns:
+                            d_df['stopped_shots'] = d_df['Total Shots'] - d_df['normal_shots']
+                        elif 'total_shots' in d_df.columns:
+                            d_df['stopped_shots'] = d_df['total_shots'] - d_df['normal_shots']
 
-                d_df["Stop Events"] = d_df.apply(lambda r: f"{r[stops_col]} ({r['stopped_shots']/r[total_shots_col]*100:.1f}%)" if r[total_shots_col]>0 else "0 (0.0%)", axis=1)
-                
-                d_df["Total Run duration (d/h/m)"] = d_df['total_runtime_sec'].apply(rr_utils.format_duration)
-                d_df["Production Time (d/h/m)"] = d_df.apply(lambda r: f"{rr_utils.format_duration(r['production_time_sec'])} ({r['production_time_sec']/r['total_runtime_sec']*100:.1f}%)" if r['total_runtime_sec']>0 else "0m (0.0%)", axis=1)
-                d_df["Downtime (d/h/m)"] = d_df.apply(lambda r: f"{rr_utils.format_duration(r['downtime_sec'])} ({r['downtime_sec']/r['total_runtime_sec']*100:.1f}%)" if r['total_runtime_sec']>0 else "0m (0.0%)", axis=1)
-                
-                # Rename for final display if not already renamed
-                rename_map = {
-                    'run_label':'RUN ID', 'mode_ct':'Mode CT (for the run)',
-                    'lower_limit':'Lower limit CT (sec)', 'upper_limit':'Upper Limit CT (sec)',
-                    'mttr_min':'MTTR (min)', 'mtbf_min':'MTBF (min)',
-                    'stability_index':'Stability (%)', 'stops':'STOPS',
-                    'MTTR (min)': 'MTTR (min)', 'MTBF (min)': 'MTBF (min)', # Mapping existing ones just in case
-                    'STABILITY %': 'Stability (%)', 'STOPS': 'STOPS'
-                }
-                d_df.rename(columns=rename_map, inplace=True)
-                
-                final_cols = ['RUN ID','Period (date/time from to)','Total shots','Normal Shots','Stop Events','Mode CT (for the run)','Lower limit CT (sec)','Upper Limit CT (sec)','Total Run duration (d/h/m)','Production Time (d/h/m)','Downtime (d/h/m)','MTTR (min)','MTBF (min)','Stability (%)']
-                final_cols = [col for col in final_cols if col in d_df.columns]
-                
-                # Format columns if they exist
-                format_dict = {}
-                if 'Mode CT (for the run)' in d_df.columns: format_dict['Mode CT (for the run)'] = '{:.2f}'
-                if 'Lower limit CT (sec)' in d_df.columns: format_dict['Lower limit CT (sec)'] = '{:.2f}'
-                if 'Upper Limit CT (sec)' in d_df.columns: format_dict['Upper Limit CT (sec)'] = '{:.2f}'
-                if 'MTTR (min)' in d_df.columns: format_dict['MTTR (min)'] = '{:.1f}'
-                if 'MTBF (min)' in d_df.columns: format_dict['MTBF (min)'] = '{:.1f}'
-                if 'Stability (%)' in d_df.columns: format_dict['Stability (%)'] = '{:.1f}'
-                
-                st.dataframe(d_df[final_cols].style.format(format_dict), use_container_width=True)
+                    stops_col = 'STOPS' if 'STOPS' in d_df.columns else 'stops'
+                    total_shots_col = 'Total Shots' if 'Total Shots' in d_df.columns else 'total_shots'
 
-        # --- 4b. Total Buckets & Stability ---
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader("Total Bucket Analysis")
-            if not complete_runs.empty and "time_bucket" in complete_runs.columns:
-                b_counts = complete_runs["time_bucket"].value_counts().reindex(results["bucket_labels"], fill_value=0)
-                fig_b = px.bar(b_counts, title="Total Time Bucket Analysis", labels={"index": "Duration (min)", "value": "Occurrences"}, text_auto=True, color=b_counts.index, color_discrete_map=results["bucket_color_map"]).update_layout(legend_title_text='Duration')
-                fig_b.update_xaxes(title_text="Duration (min)")
-                fig_b.update_yaxes(title_text="Occurrences")
-                st.plotly_chart(fig_b, use_container_width=True)
-                with st.expander("View Bucket Data Table", expanded=False): 
-                    df_bucket_data = complete_runs.copy()
-                    cols_to_show = ['run_group', 'duration_min', 'time_bucket', 'run_end_time', 'run_label']
-                    df_bucket_data = df_bucket_data[[col for col in cols_to_show if col in df_bucket_data.columns]].rename(columns={
-                        'run_group': 'Run Group', 'duration_min': 'Duration (min)',
-                        'time_bucket': 'Time Bucket', 'run_end_time': 'Run End Date/ Time',
-                        'run_label': 'Run ID'
-                    })
-                    st.dataframe(df_bucket_data)
-            else: st.info("No complete runs.")
-        
-        with c2:
-            st.subheader("Stability per Production Run")
-            if run_summary_df is not None and not run_summary_df.empty:
-                rr_utils.plot_trend_chart(run_summary_df, 'RUN ID', 'STABILITY %', "Stability per Run", "Run ID", "Stability (%)", is_stability=True)
-                with st.expander("View Stability Data Table", expanded=False): 
+                    d_df["Stop Events"] = d_df.apply(lambda r: f"{r[stops_col]} ({r['stopped_shots']/r[total_shots_col]*100:.1f}%)" if r[total_shots_col]>0 else "0 (0.0%)", axis=1)
+                    
+                    d_df["Total Run duration (d/h/m)"] = d_df['total_runtime_sec'].apply(rr_utils.format_duration)
+                    d_df["Production Time (d/h/m)"] = d_df.apply(lambda r: f"{rr_utils.format_duration(r['production_time_sec'])} ({r['production_time_sec']/r['total_runtime_sec']*100:.1f}%)" if r['total_runtime_sec']>0 else "0m (0.0%)", axis=1)
+                    d_df["Downtime (d/h/m)"] = d_df.apply(lambda r: f"{rr_utils.format_duration(r['downtime_sec'])} ({r['downtime_sec']/r['total_runtime_sec']*100:.1f}%)" if r['total_runtime_sec']>0 else "0m (0.0%)", axis=1)
+                    
+                    rename_map = {
+                        'run_label':'RUN ID', 'mode_ct':'Mode CT (for the run)',
+                        'lower_limit':'Lower limit CT (sec)', 'upper_limit':'Upper Limit CT (sec)',
+                        'mttr_min':'MTTR (min)', 'mtbf_min':'MTBF (min)',
+                        'stability_index':'Stability (%)', 'stops':'STOPS',
+                        'MTTR (min)': 'MTTR (min)', 'MTBF (min)': 'MTBF (min)', 
+                        'STABILITY %': 'Stability (%)', 'STOPS': 'STOPS'
+                    }
+                    d_df.rename(columns=rename_map, inplace=True)
+                    
+                    final_cols = ['RUN ID','Period (date/time from to)','Total shots','Normal Shots','Stop Events','Mode CT (for the run)','Lower limit CT (sec)','Upper Limit CT (sec)','Total Run duration (d/h/m)','Production Time (d/h/m)','Downtime (d/h/m)','MTTR (min)','MTBF (min)','Stability (%)']
+                    final_cols = [col for col in final_cols if col in d_df.columns]
+                    
+                    format_dict = {}
+                    if 'Mode CT (for the run)' in d_df.columns: format_dict['Mode CT (for the run)'] = '{:.2f}'
+                    if 'Lower limit CT (sec)' in d_df.columns: format_dict['Lower limit CT (sec)'] = '{:.2f}'
+                    if 'Upper Limit CT (sec)' in d_df.columns: format_dict['Upper Limit CT (sec)'] = '{:.2f}'
+                    if 'MTTR (min)' in d_df.columns: format_dict['MTTR (min)'] = '{:.1f}'
+                    if 'MTBF (min)' in d_df.columns: format_dict['MTBF (min)'] = '{:.1f}'
+                    if 'Stability (%)' in d_df.columns: format_dict['Stability (%)'] = '{:.1f}'
+                    
+                    st.dataframe(d_df[final_cols].style.format(format_dict), use_container_width=True)
+
+            # --- 4b. Total Buckets & Stability (Run) ---
+            c1, c2 = st.columns(2)
+            with c1:
+                st.subheader("Total Bucket Analysis")
+                if not complete_runs.empty and "time_bucket" in complete_runs.columns:
+                    b_counts = complete_runs["time_bucket"].value_counts().reindex(results["bucket_labels"], fill_value=0)
+                    fig_b = px.bar(b_counts, title="Total Time Bucket Analysis", labels={"index": "Duration (min)", "value": "Occurrences"}, text_auto=True, color=b_counts.index, color_discrete_map=results["bucket_color_map"]).update_layout(legend_title_text='Duration')
+                    fig_b.update_xaxes(title_text="Duration (min)")
+                    fig_b.update_yaxes(title_text="Occurrences")
+                    st.plotly_chart(fig_b, use_container_width=True)
+                    with st.expander("View Bucket Data Table", expanded=False): 
+                        df_bucket_data = complete_runs.copy()
+                        cols_to_show = ['run_group', 'duration_min', 'time_bucket', 'run_end_time', 'run_label']
+                        df_bucket_data = df_bucket_data[[col for col in cols_to_show if col in df_bucket_data.columns]].rename(columns={
+                            'run_group': 'Run Group', 'duration_min': 'Duration (min)',
+                            'time_bucket': 'Time Bucket', 'run_end_time': 'Run End Date/ Time',
+                            'run_label': 'Run ID'
+                        })
+                        st.dataframe(df_bucket_data)
+                else: st.info("No complete runs.")
+            
+            with c2:
+                st.subheader("Stability per Production Run")
+                if run_summary_df is not None and not run_summary_df.empty:
+                    rr_utils.plot_trend_chart(run_summary_df, 'RUN ID', 'STABILITY %', "Stability per Run", "Run ID", "Stability (%)", is_stability=True)
+                    with st.expander("View Stability Data Table", expanded=False): 
+                        st.dataframe(rr_utils.get_renamed_summary_df(run_summary_df))
+                else: st.info(f"No runs to analyze.")
+            
+            # --- 4c. Bucket Trend (Run) ---
+            st.subheader("Bucket Trend per Production Run")
+            if not complete_runs.empty and run_summary_df is not None and not run_summary_df.empty:
+                run_group_to_label_map = processed_df.drop_duplicates('run_group')[['run_group', 'run_label']].set_index('run_group')['run_label']
+                complete_runs['run_label'] = complete_runs['run_group'].map(run_group_to_label_map)
+                pivot_df = pd.crosstab(index=complete_runs['run_label'], columns=complete_runs['time_bucket'].astype('category').cat.set_categories(results["bucket_labels"]))
+                all_runs = run_summary_df['RUN ID']
+                pivot_df = pivot_df.reindex(all_runs, fill_value=0)
+                fig_bucket_trend = make_subplots(specs=[[{"secondary_y": True}]])
+                for col in pivot_df.columns:
+                    fig_bucket_trend.add_trace(go.Bar(name=col, x=pivot_df.index, y=pivot_df[col], marker_color=results["bucket_color_map"].get(col)), secondary_y=False)
+                fig_bucket_trend.add_trace(go.Scatter(name='Total Shots', x=run_summary_df['RUN ID'], y=run_summary_df['Total Shots'], mode='lines+markers+text', text=run_summary_df['Total Shots'], textposition='top center', line=dict(color='blue')), secondary_y=True)
+                fig_bucket_trend.update_layout(barmode='stack', title_text='Distribution of Run Durations per Run vs. Shot Count', 
+                                                xaxis_title='Run ID', yaxis_title='Number of Runs', 
+                                                yaxis2_title='Total Shots', legend_title_text='Run Duration (min)')
+                st.plotly_chart(fig_bucket_trend, use_container_width=True)
+                with st.expander("View Bucket Trend Data Table & Analysis", expanded=False):
+                    st.dataframe(pivot_df)
+                    if detailed_view:
+                        st.markdown(rr_utils.generate_bucket_analysis(complete_runs, results["bucket_labels"]), unsafe_allow_html=True)
+            
+            # --- 4d. MTTR & MTBF (Run) ---
+            st.subheader("MTTR & MTBF per Production Run")
+            if run_summary_df is not None and not run_summary_df.empty and run_summary_df['STOPS'].sum() > 0:
+                rr_utils.plot_mttr_mtbf_chart(
+                    df=run_summary_df, x_col='RUN ID', mttr_col='MTTR (min)',
+                    mtbf_col='MTBF (min)', shots_col='Total Shots',
+                    title="MTTR, MTBF & Shot Count per Run"
+                )
+                with st.expander("View MTTR/MTBF Data Table & Correlation Analysis", expanded=False): 
                     st.dataframe(rr_utils.get_renamed_summary_df(run_summary_df))
-            else: st.info(f"No runs to analyze.")
-        
-        # --- 4c. Bucket Trend ---
-        st.subheader("Bucket Trend per Production Run")
-        if not complete_runs.empty and run_summary_df is not None and not run_summary_df.empty:
-            run_group_to_label_map = processed_df.drop_duplicates('run_group')[['run_group', 'run_label']].set_index('run_group')['run_label']
-            complete_runs['run_label'] = complete_runs['run_group'].map(run_group_to_label_map)
-            pivot_df = pd.crosstab(index=complete_runs['run_label'], columns=complete_runs['time_bucket'].astype('category').cat.set_categories(results["bucket_labels"]))
-            all_runs = run_summary_df['RUN ID']
-            pivot_df = pivot_df.reindex(all_runs, fill_value=0)
-            fig_bucket_trend = make_subplots(specs=[[{"secondary_y": True}]])
-            for col in pivot_df.columns:
-                fig_bucket_trend.add_trace(go.Bar(name=col, x=pivot_df.index, y=pivot_df[col], marker_color=results["bucket_color_map"].get(col)), secondary_y=False)
-            fig_bucket_trend.add_trace(go.Scatter(name='Total Shots', x=run_summary_df['RUN ID'], y=run_summary_df['Total Shots'], mode='lines+markers+text', text=run_summary_df['Total Shots'], textposition='top center', line=dict(color='blue')), secondary_y=True)
-            fig_bucket_trend.update_layout(barmode='stack', title_text='Distribution of Run Durations per Run vs. Shot Count', 
-                                            xaxis_title='Run ID', yaxis_title='Number of Runs', 
-                                            yaxis2_title='Total Shots', legend_title_text='Run Duration (min)')
-            st.plotly_chart(fig_bucket_trend, use_container_width=True)
-            with st.expander("View Bucket Trend Data Table & Analysis", expanded=False):
-                st.dataframe(pivot_df)
+                    if detailed_view:
+                        st.markdown(rr_utils.generate_mttr_mtbf_analysis(analysis_df, analysis_level), unsafe_allow_html=True)
+
+        # --- Option B: Hourly View (Only for Daily) ---
+        elif analysis_view_mode == "Hour":
+            
+            hourly_summary_df = results.get('hourly_summary', pd.DataFrame())
+            
+            # --- 4a. Hourly Breakdown Table ---
+            with st.expander("View Hourly Breakdown Table", expanded=True):
+                if not hourly_summary_df.empty:
+                    st.dataframe(rr_utils.get_renamed_summary_df(hourly_summary_df), use_container_width=True)
+                else:
+                    st.info("No hourly data available.")
+
+            c1,c2 = st.columns(2)
+            with c1:
+                # Hourly Bucket Analysis = Completed runs that ENDED in that hour
+                st.subheader("Hourly Bucket Trend")
+                if not complete_runs.empty:
+                    complete_runs['hour'] = complete_runs['run_end_time'].dt.hour
+                    pivot_df = pd.crosstab(index=complete_runs['hour'], columns=complete_runs['time_bucket'].astype('category').cat.set_categories(results["bucket_labels"]))
+                    pivot_df = pivot_df.reindex(pd.Index(range(24), name='hour'), fill_value=0)
+                    fig_hourly_bucket = px.bar(pivot_df, x=pivot_df.index, y=pivot_df.columns, 
+                                            title='Hourly Distribution of Run Durations', barmode='stack', 
+                                            color_discrete_map=results["bucket_color_map"], 
+                                            labels={'hour': 'Hour', 'value': 'Number of Buckets', 'variable': 'Run Duration (min)'})
+                    st.plotly_chart(fig_hourly_bucket, use_container_width=True)
+                    with st.expander("View Bucket Trend Data", expanded=False): st.dataframe(pivot_df)
+                else:
+                    st.info("No completed runs to chart by hour.")
+            
+            with c2:
+                st.subheader("Hourly Stability Trend")
+                if not hourly_summary_df.empty:
+                    rr_utils.plot_trend_chart(hourly_summary_df, 'hour', 'stability_index', "Hourly Stability Trend", "Hour of Day", "Stability (%)", is_stability=True)
+                    with st.expander("View Stability Data", expanded=False): 
+                        st.dataframe(rr_utils.get_renamed_summary_df(hourly_summary_df))
+                else:
+                    st.info("No hourly stability data.")
+
+            st.subheader("Hourly MTTR & MTBF Trend")
+            if not hourly_summary_df.empty and hourly_summary_df['stops'].sum() > 0:
+                rr_utils.plot_mttr_mtbf_chart(
+                    df=hourly_summary_df, x_col='hour', mttr_col='mttr_min',
+                    mtbf_col='mtbf_min', shots_col='total_shots',
+                    title="Hourly MTTR & MTBF Trend"
+                )
+                with st.expander("View MTTR/MTBF Data", expanded=False): 
+                    st.dataframe(rr_utils.get_renamed_summary_df(hourly_summary_df))
                 if detailed_view:
-                    st.markdown(rr_utils.generate_bucket_analysis(complete_runs, results["bucket_labels"]), unsafe_allow_html=True)
-        
-        # --- 4d. MTTR & MTBF ---
-        st.subheader("MTTR & MTBF per Production Run")
-        if run_summary_df is not None and not run_summary_df.empty and run_summary_df['STOPS'].sum() > 0:
-            rr_utils.plot_mttr_mtbf_chart(
-                df=run_summary_df, x_col='RUN ID', mttr_col='MTTR (min)',
-                mtbf_col='MTBF (min)', shots_col='Total Shots',
-                title="MTTR, MTBF & Shot Count per Run"
-            )
-            with st.expander("View MTTR/MTBF Data Table & Correlation Analysis", expanded=False): 
-                st.dataframe(rr_utils.get_renamed_summary_df(run_summary_df))
-                if detailed_view:
-                    st.markdown(rr_utils.generate_mttr_mtbf_analysis(analysis_df, analysis_level), unsafe_allow_html=True)
+                    with st.expander("🤖 View MTTR/MTBF Correlation Analysis", expanded=False):
+                         # Use the original function logic manually for hourly since helper expects specific cols
+                         st.info("Automated correlation analysis is best viewed in 'Run' mode.")
+            else:
+                 st.info("No hourly stop data for MTTR/MTBF charts.")
 
 # ==============================================================================
 # --- 8. MAIN APP ENTRY POINT ---
