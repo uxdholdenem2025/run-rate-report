@@ -7,6 +7,7 @@ from plotly.subplots import make_subplots
 from io import BytesIO
 import warnings
 import xlsxwriter
+# --- FIX: Explicitly import date and datetime to prevent NameError ---
 from datetime import datetime, timedelta, date
 
 # ==============================================================================
@@ -91,9 +92,12 @@ def load_all_data(files):
             df = pd.read_excel(file)
             
             # --- FIX #2: Robust Column Normalization ---
+            # Create a map of normalized (uppercase, stripped) names to original names
             col_map = {col.strip().upper(): col for col in df.columns}
             
-            def get_col(target): return col_map.get(target)
+            # Helper to find a column regardless of case
+            def get_col(target):
+                return col_map.get(target)
 
             # Handle Tool ID
             tool_id_col = get_col("TOOLING ID") or get_col("EQUIPMENT CODE") or get_col("TOOL_ID")
@@ -102,6 +106,7 @@ def load_all_data(files):
 
             # Handle Timestamp
             if {"YEAR", "MONTH", "DAY", "TIME"}.issubset(set(col_map.keys())):
+                # Reconstruct using the original column names found via the map
                 year_col = get_col("YEAR")
                 month_col = get_col("MONTH")
                 day_col = get_col("DAY")
@@ -142,7 +147,12 @@ class RunRateCalculator:
     def _prepare_data(self) -> pd.DataFrame:
         """Prepares raw DataFrame by parsing time and calculating initial 'time_diff_sec'."""
         df = self.df_raw.copy()
-        if "shot_time" not in df.columns: return pd.DataFrame()
+        # Note: load_all_data handles the initial loading, but if passing a raw df directly:
+        # We rely on 'shot_time' being present or constructable.
+        # This method acts as a safeguard if the df didn't come from load_all_data
+        if "shot_time" not in df.columns:
+             # Try to construct it similar to load_all_data logic or fail gracefully
+             return pd.DataFrame()
 
         df = df.dropna(subset=["shot_time"]).sort_values("shot_time").reset_index(drop=True)
         if df.empty: return pd.DataFrame()
@@ -155,6 +165,7 @@ class RunRateCalculator:
 
         df["time_diff_sec"] = df["shot_time"].diff().dt.total_seconds()
 
+        # --- REVERTED: Default the first shot's time diff to its Actual CT ---
         if not df.empty and pd.isna(df.loc[0, "time_diff_sec"]):
             if "ACTUAL CT" in df.columns:
                 df.loc[0, "time_diff_sec"] = df.loc[0, "ACTUAL CT"]
@@ -172,6 +183,7 @@ class RunRateCalculator:
         hourly_groups = df.groupby('hour')
         stops = hourly_groups['stop_event'].sum()
         
+        # We still use adj_ct_sec for the granular hourly visualization
         hourly_total_downtime_sec = hourly_groups.apply(lambda x: x[x['stop_flag'] == 1]['adj_ct_sec'].sum())
         
         uptime_min = df[df['stop_flag'] == 0].groupby('hour')['ACTUAL CT'].sum() / 60
@@ -910,12 +922,19 @@ def prepare_and_generate_run_based_excel(df_for_export, tolerance, downtime_gap_
                      run_results['first_shot_time_diff'] = 0
 
                 export_df = run_results['processed_df'].copy()
+                
+                # --- NEW: Populate Shot Sequence ---
+                export_df['Shot Sequence'] = range(1, len(export_df) + 1)
+                
                 for col in formula_columns:
                     if col not in export_df.columns:
                         export_df[col] = ''
 
                 cols_to_keep = [col for col in desired_columns_base if col in export_df.columns]
                 cols_to_keep_final = cols_to_keep + [col for col in formula_columns if col in export_df.columns]
+                # Add Shot Sequence
+                if 'Shot Sequence' in export_df.columns:
+                    cols_to_keep_final.append('Shot Sequence')
 
                 final_export_df = export_df[list(dict.fromkeys(cols_to_keep_final))].rename(columns={
                     'tool_id': 'EQUIPMENT CODE', 'shot_time': 'SHOT TIME',
@@ -1145,8 +1164,12 @@ def generate_excel_report(all_runs_data, tolerance):
                 if run_dur_col_dyn: ws.write(f'{run_dur_col_dyn}{start_row}', "Formula Error", error_format)
                 if bucket_col_dyn: ws.write(f'{bucket_col_dyn}{start_row}', "Formula Error", error_format)
 
-            # --- Auto-adjust column widths ---
+            # --- Auto-adjust column widths & Hide Session ID ---
             for i, col_name in enumerate(df_run.columns):
+                if col_name == "SESSION ID":
+                    ws.set_column(i, i, None, {'hidden': True}) # Hide Session ID
+                    continue
+
                 try:
                     max_len_data = df_run[col_name].astype(str).map(len).max()
                     max_len_data = 0 if pd.isna(max_len_data) else int(max_len_data)
@@ -1156,135 +1179,3 @@ def generate_excel_report(all_runs_data, tolerance):
                     ws.set_column(i, i, len(str(col_name)) + 2)
 
     return output.getvalue()
-
-
-# ==============================================================================
-# --- 6. RISK TOWER MODULE ---
-# ==============================================================================
-
-@st.cache_data(show_spinner="Analyzing tool performance for Risk Tower...")
-def calculate_risk_scores(df_all_tools):
-    """
-    Analyzes data for all tools, each within its own last 4-week window,
-    using 'aggregate of runs' logic for cleaner MTTR/Stability.
-    """
-    id_col = "tool_id"
-    initial_metrics = []
-    
-    RUN_INTERVAL_HOURS = 8
-    RUN_INTERVAL_SEC = RUN_INTERVAL_HOURS * 3600
-
-    # First pass: Calculate metrics for each tool
-    for tool_id, df_tool in df_all_tools.groupby(id_col):
-        if df_tool.empty or len(df_tool) < 10:
-            continue
-
-        calc_prepare = RunRateCalculator(df_tool, 0.05, 2.0)
-        df_prepared = calc_prepare.results.get("processed_df")
-        if df_prepared is None or df_prepared.empty:
-            continue
-            
-        end_date = df_prepared['shot_time'].max()
-        start_date = end_date - timedelta(weeks=4)
-        df_period = df_prepared[(df_prepared['shot_time'] >= start_date) & (df_prepared['shot_time'] <= end_date)].copy() # Use .copy()
-
-        if df_period.empty or len(df_period) < 10:
-            continue
-
-        is_new_run = df_period['time_diff_sec'] > RUN_INTERVAL_SEC
-        df_period['run_id_risk'] = is_new_run.cumsum()
-        df_period['run_label'] = df_period['run_id_risk'].apply(lambda x: f'Run_{x}')
-        
-        run_summary_df = calculate_run_summaries(df_period, 0.05, 2.0)
-        
-        if run_summary_df.empty:
-            continue
-                
-        total_runtime_sec = run_summary_df['total_runtime_sec'].sum()
-        production_time_sec = run_summary_df['production_time_sec'].sum()
-        downtime_sec = run_summary_df['downtime_sec'].sum()
-        stop_events = run_summary_df['stops'].sum()
-
-        res_stability = (production_time_sec / total_runtime_sec * 100) if total_runtime_sec > 0 else 100.0
-        res_mttr = (downtime_sec / 60 / stop_events) if stop_events > 0 else 0
-        res_mtbf = (production_time_sec / 60 / stop_events) if stop_events > 0 else (production_time_sec / 60)
-        
-        weekly_stats = []
-        df_period['week'] = df_period['shot_time'].dt.isocalendar().week
-        
-        for week_num, df_week_full in df_period.groupby('week'):
-            df_week = df_week_full.copy()
-            is_new_run_week = df_week['time_diff_sec'] > RUN_INTERVAL_SEC
-            df_week['run_id_week'] = is_new_run_week.cumsum()
-            df_week['run_label'] = df_week['run_id_week'].apply(lambda x: f'WeekRun_{x}')
-            
-            weekly_run_summary = calculate_run_summaries(df_week, 0.05, 2.0)
-            
-            if not weekly_run_summary.empty:
-                w_tot_runtime = weekly_run_summary['total_runtime_sec'].sum()
-                w_prod_time = weekly_run_summary['production_time_sec'].sum()
-                w_stability = (w_prod_time / w_tot_runtime * 100) if w_tot_runtime > 0 else 100.0
-                weekly_stats.append({'week': week_num, 'stability': w_stability})
-            else:
-                if not df_week.empty:
-                     weekly_stats.append({'week': week_num, 'stability': 0.0})
-
-        
-        weekly_stabilities_df = pd.DataFrame(weekly_stats).sort_values('week')
-        weekly_stabilities = weekly_stabilities_df['stability'].tolist()
-
-        trend = "Stable"
-        if len(weekly_stabilities) > 1 and weekly_stabilities[-1] < weekly_stabilities[0] * 0.95:
-            trend = "Declining"
-
-        initial_metrics.append({
-            'Tool ID': tool_id,
-            'Stability': res_stability,
-            'MTTR': res_mttr,
-            'MTBF': res_mtbf,
-            'Weekly Stability': ' → '.join([f'{s:.0f}%' for s in weekly_stabilities]),
-            'Trend': trend,
-            'Analysis Period': f"{start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}",
-        })
-
-    if not initial_metrics:
-        return pd.DataFrame()
-
-    # --- Second pass: Determine risk factors by comparing against GLOBAL averages ---
-    metrics_df = pd.DataFrame(initial_metrics)
-    
-    overall_mttr_mean = metrics_df['MTTR'].mean()
-    overall_mtbf_mean = metrics_df['MTBF'].mean()
-
-    final_risk_data = []
-    for _, row in metrics_df.iterrows():
-        risk_score = row['Stability']
-        if row['Trend'] == "Declining":
-            risk_score -= 20
-        
-        primary_factor = "Low Stability"
-        details = f"Overall stability is {row['Stability']:.1f}%."
-        
-        if row['Trend'] == "Declining":
-            primary_factor = "Declining Trend"
-            details = "Stability shows a consistent downward trend."
-        elif row['Stability'] < 70 and overall_mttr_mean > 0 and row['MTTR'] > (overall_mttr_mean * 1.2):
-            primary_factor = "High MTTR"
-            details = f"Avg stop duration (MTTR) of {row['MTTR']:.1f} min is high (Avg: {overall_mttr_mean:.1f} min)."
-        elif row['Stability'] < 70 and overall_mtbf_mean > 0 and row['MTBF'] < (overall_mtbf_mean * 0.8):
-            primary_factor = "Frequent Stops"
-            details = f"Frequent stops (MTBF of {row['MTBF']:.1f} min) is low (Avg: {overall_mtbf_mean:.1f} min)."
-
-        final_risk_data.append({
-            'Tool ID': row['Tool ID'],
-            'Analysis Period': row['Analysis Period'],
-            'Risk Score': max(0, risk_score),
-            'Primary Risk Factor': primary_factor,
-            'Weekly Stability': row['Weekly Stability'],
-            'Details': details
-        })
-
-    if not final_risk_data:
-        return pd.DataFrame()
-            
-    return pd.DataFrame(final_risk_data).sort_values('Risk Score', ascending=True).reset_index(drop=True)
