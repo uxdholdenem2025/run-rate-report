@@ -196,6 +196,7 @@ def render_dashboard(df_tool, tool_id_selection):
     # --- Run Filtering and Labeling ---
     if not df_view.empty:
         df_view = df_view.copy()
+        # Run identification is always relevant now
         if 'run_id' in df_view.columns:
             # Create a consistent integer-based index for runs within the current view
             df_view['run_id_local'] = df_view.groupby('run_id').ngroup()
@@ -397,21 +398,61 @@ def render_dashboard(df_tool, tool_id_selection):
             if run_summary_df is not None and not run_summary_df.empty:
                 d_df = run_summary_df.copy()
                 d_df["Period (date/time from to)"] = d_df.apply(lambda row: f"{row['start_time'].strftime('%Y-%m-%d %H:%M')} to {row['end_time'].strftime('%Y-%m-%d %H:%M')}", axis=1)
-                d_df["Total shots"] = d_df['total_shots'].apply(lambda x: f"{x:,}")
-                d_df["Normal Shots"] = d_df.apply(lambda r: f"{r['normal_shots']:,} ({r['normal_shots']/r['total_shots']*100:.1f}%)" if r['total_shots']>0 else "0 (0.0%)", axis=1)
-                d_df["Stop Events"] = d_df.apply(lambda r: f"{r['stops']} ({r['stopped_shots']/r['total_shots']*100:.1f}%)" if r['total_shots']>0 else "0 (0.0%)", axis=1)
+                
+                # --- FIX: Handle renamed column from trend_summary_df ---
+                # 'total_shots' was renamed to 'Total Shots' in the previous step
+                # We need to check which one exists
+                if 'Total Shots' in d_df.columns:
+                    d_df["Total shots"] = d_df['Total Shots'].apply(lambda x: f"{x:,}")
+                elif 'total_shots' in d_df.columns:
+                    d_df["Total shots"] = d_df['total_shots'].apply(lambda x: f"{x:,}")
+
+                d_df["Normal Shots"] = d_df.apply(lambda r: f"{r['normal_shots']:,} ({r['normal_shots']/r['total_shots']*100:.1f}%)" if 'total_shots' in r and r['total_shots']>0 else (f"{r['normal_shots']:,} ({r['normal_shots']/r['Total Shots']*100:.1f}%)" if 'Total Shots' in r and r['Total Shots']>0 else "0 (0.0%)"), axis=1)
+                
+                # Need to ensure 'stopped_shots' is available (it might not be in the renamed trend_summary_df)
+                # We can recalculate it: Total - Normal
+                if 'stopped_shots' not in d_df.columns:
+                    if 'Total Shots' in d_df.columns:
+                        d_df['stopped_shots'] = d_df['Total Shots'] - d_df['normal_shots']
+                    elif 'total_shots' in d_df.columns:
+                        d_df['stopped_shots'] = d_df['total_shots'] - d_df['normal_shots']
+
+                # Handle 'stops' vs 'STOPS'
+                stops_col = 'STOPS' if 'STOPS' in d_df.columns else 'stops'
+                
+                # Handle total shots column for calculation
+                total_shots_col = 'Total Shots' if 'Total Shots' in d_df.columns else 'total_shots'
+
+                d_df["Stop Events"] = d_df.apply(lambda r: f"{r[stops_col]} ({r['stopped_shots']/r[total_shots_col]*100:.1f}%)" if r[total_shots_col]>0 else "0 (0.0%)", axis=1)
+                
                 d_df["Total Run duration (d/h/m)"] = d_df['total_runtime_sec'].apply(rr_utils.format_duration)
                 d_df["Production Time (d/h/m)"] = d_df.apply(lambda r: f"{rr_utils.format_duration(r['production_time_sec'])} ({r['production_time_sec']/r['total_runtime_sec']*100:.1f}%)" if r['total_runtime_sec']>0 else "0m (0.0%)", axis=1)
                 d_df["Downtime (d/h/m)"] = d_df.apply(lambda r: f"{rr_utils.format_duration(r['downtime_sec'])} ({r['downtime_sec']/r['total_runtime_sec']*100:.1f}%)" if r['total_runtime_sec']>0 else "0m (0.0%)", axis=1)
-                d_df.rename(columns={
+                
+                # Rename for final display if not already renamed
+                rename_map = {
                     'run_label':'RUN ID', 'mode_ct':'Mode CT (for the run)',
                     'lower_limit':'Lower limit CT (sec)', 'upper_limit':'Upper Limit CT (sec)',
                     'mttr_min':'MTTR (min)', 'mtbf_min':'MTBF (min)',
-                    'stability_index':'Stability (%)', 'stops':'STOPS'
-                    }, inplace=True)
+                    'stability_index':'Stability (%)', 'stops':'STOPS',
+                    'MTTR (min)': 'MTTR (min)', 'MTBF (min)': 'MTBF (min)', # Mapping existing ones just in case
+                    'STABILITY %': 'Stability (%)', 'STOPS': 'STOPS'
+                }
+                d_df.rename(columns=rename_map, inplace=True)
+                
                 final_cols = ['RUN ID','Period (date/time from to)','Total shots','Normal Shots','Stop Events','Mode CT (for the run)','Lower limit CT (sec)','Upper Limit CT (sec)','Total Run duration (d/h/m)','Production Time (d/h/m)','Downtime (d/h/m)','MTTR (min)','MTBF (min)','Stability (%)']
                 final_cols = [col for col in final_cols if col in d_df.columns]
-                st.dataframe(d_df[final_cols].style.format({'Mode CT (for the run)':'{:.2f}','Lower limit CT (sec)':'{:.2f}','Upper Limit CT (sec)':'{:.2f}','MTTR (min)':'{:.1f}','MTBF (min)':'{:.1f}','Stability (%)':'{:.1f}'}), use_container_width=True)
+                
+                # Format columns if they exist
+                format_dict = {}
+                if 'Mode CT (for the run)' in d_df.columns: format_dict['Mode CT (for the run)'] = '{:.2f}'
+                if 'Lower limit CT (sec)' in d_df.columns: format_dict['Lower limit CT (sec)'] = '{:.2f}'
+                if 'Upper Limit CT (sec)' in d_df.columns: format_dict['Upper Limit CT (sec)'] = '{:.2f}'
+                if 'MTTR (min)' in d_df.columns: format_dict['MTTR (min)'] = '{:.1f}'
+                if 'MTBF (min)' in d_df.columns: format_dict['MTBF (min)'] = '{:.1f}'
+                if 'Stability (%)' in d_df.columns: format_dict['Stability (%)'] = '{:.1f}'
+                
+                st.dataframe(d_df[final_cols].style.format(format_dict), use_container_width=True)
 
         # --- 4b. Total Buckets & Stability ---
         c1, c2 = st.columns(2)
