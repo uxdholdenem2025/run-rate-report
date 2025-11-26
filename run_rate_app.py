@@ -226,9 +226,9 @@ def render_dashboard(df_tool, tool_id_selection):
         # --- Main Calculation for Selected Period ---
         results = {}
         summary_metrics = {}
-        run_summary_df_for_totals = pd.DataFrame() # Initialize to avoid NameError later if logic skips
-        run_summary_df = None # Initialize to avoid NameError
-        trend_summary_df = None # Initialize
+        run_summary_df_for_totals = pd.DataFrame()
+        run_summary_df = None # Initialize to prevent NameError
+        trend_summary_df = None 
 
         # All remaining options are "by Run"
         run_summary_df_for_totals = rr_utils.calculate_run_summaries(df_view, tolerance, downtime_gap_tolerance)
@@ -280,11 +280,12 @@ def render_dashboard(df_tool, tool_id_selection):
             )
             
         # --- Prepare Trend Data ---
-        # We always calculate this now since we removed "Daily" (standard)
-        trend_summary_df = rr_utils.calculate_run_summaries(df_view, tolerance, downtime_gap_tolerance)
-        if trend_summary_df is not None and not trend_summary_df.empty:
-            trend_summary_df.rename(columns={'run_label': 'RUN ID', 'stability_index': 'STABILITY %', 'stops': 'STOPS', 'mttr_min': 'MTTR (min)', 'mtbf_min': 'MTBF (min)', 'total_shots': 'Total Shots'}, inplace=True)
-            run_summary_df = trend_summary_df # Ensure this is available for later tables
+        trend_summary_df = None
+        if "by Run" in analysis_level: 
+            trend_summary_df = rr_utils.calculate_run_summaries(df_view, tolerance, downtime_gap_tolerance)
+            if trend_summary_df is not None and not trend_summary_df.empty:
+                trend_summary_df.rename(columns={'run_label': 'RUN ID', 'stability_index': 'STABILITY %', 'stops': 'STOPS', 'mttr_min': 'MTTR (min)', 'mtbf_min': 'MTBF (min)', 'total_shots': 'Total Shots'}, inplace=True)
+            run_summary_df = trend_summary_df # Make sure this is available for later
 
         # --- 1. KPI Metrics Display ---
         with st.container(border=True):
