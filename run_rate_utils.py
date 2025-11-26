@@ -7,7 +7,6 @@ from plotly.subplots import make_subplots
 from io import BytesIO
 import warnings
 import xlsxwriter
-# --- FIX: Explicitly import date and datetime to prevent NameError ---
 from datetime import datetime, timedelta, date
 
 # ==============================================================================
@@ -92,12 +91,9 @@ def load_all_data(files):
             df = pd.read_excel(file)
             
             # --- FIX #2: Robust Column Normalization ---
-            # Create a map of normalized (uppercase, stripped) names to original names
             col_map = {col.strip().upper(): col for col in df.columns}
             
-            # Helper to find a column regardless of case
-            def get_col(target):
-                return col_map.get(target)
+            def get_col(target): return col_map.get(target)
 
             # Handle Tool ID
             tool_id_col = get_col("TOOLING ID") or get_col("EQUIPMENT CODE") or get_col("TOOL_ID")
@@ -106,7 +102,6 @@ def load_all_data(files):
 
             # Handle Timestamp
             if {"YEAR", "MONTH", "DAY", "TIME"}.issubset(set(col_map.keys())):
-                # Reconstruct using the original column names found via the map
                 year_col = get_col("YEAR")
                 month_col = get_col("MONTH")
                 day_col = get_col("DAY")
@@ -147,15 +142,16 @@ class RunRateCalculator:
     def _prepare_data(self) -> pd.DataFrame:
         """Prepares raw DataFrame by parsing time and calculating initial 'time_diff_sec'."""
         df = self.df_raw.copy()
-        # Note: load_all_data handles the initial loading, but if passing a raw df directly:
-        # We rely on 'shot_time' being present or constructable.
-        # This method acts as a safeguard if the df didn't come from load_all_data
-        if "shot_time" not in df.columns:
-             # Try to construct it similar to load_all_data logic or fail gracefully
-             return pd.DataFrame()
+        if "shot_time" not in df.columns: return pd.DataFrame()
 
         df = df.dropna(subset=["shot_time"]).sort_values("shot_time").reset_index(drop=True)
         if df.empty: return pd.DataFrame()
+
+        # Ensure numeric types for CT
+        if "ACTUAL CT" in df.columns:
+             df["ACTUAL CT"] = pd.to_numeric(df["ACTUAL CT"], errors='coerce').fillna(0)
+        else:
+             df["ACTUAL CT"] = 0
 
         df["time_diff_sec"] = df["shot_time"].diff().dt.total_seconds()
 
@@ -176,7 +172,6 @@ class RunRateCalculator:
         hourly_groups = df.groupby('hour')
         stops = hourly_groups['stop_event'].sum()
         
-        # We still use adj_ct_sec for the granular hourly visualization
         hourly_total_downtime_sec = hourly_groups.apply(lambda x: x[x['stop_flag'] == 1]['adj_ct_sec'].sum())
         
         uptime_min = df[df['stop_flag'] == 0].groupby('hour')['ACTUAL CT'].sum() / 60
@@ -237,19 +232,43 @@ class RunRateCalculator:
             mode_ct_display = mode_ct
 
         # --- 2. Stop Detection Logic ---
+        
+        # Calculate Next Shot Time Difference (Forward Looking)
+        # This represents the gap *after* the current shot finishes
+        # We shift time_diff_sec UP by 1 (because time_diff_sec is calculated on the *current* row relative to *prev*)
+        # Row N's time_diff_sec = Start(N) - Start(N-1)
+        # So for Row N-1, the "gap after" is the time_diff_sec of Row N.
+        df['next_shot_time_diff'] = df['time_diff_sec'].shift(-1).fillna(0)
+        
         is_hard_stop_code = df["ACTUAL CT"] >= 999.9
         is_abnormal_cycle = ((df["ACTUAL CT"] < lower_limit) | (df["ACTUAL CT"] > upper_limit)) & ~is_hard_stop_code
-        prev_actual_ct = df["ACTUAL CT"].shift(1)
-        is_time_gap = df["time_diff_sec"] > (prev_actual_ct + self.downtime_gap_tolerance)
+        
+        # A "Time Gap Stop" is now defined if the NEXT shot starts way later than expected
+        # We compare next_shot_time_diff vs (current_actual_ct + tolerance)
+        is_time_gap = df["next_shot_time_diff"] > (df["ACTUAL CT"] + self.downtime_gap_tolerance)
 
         df["stop_flag"] = np.where(is_abnormal_cycle | is_time_gap | is_hard_stop_code, 1, 0)
+        
+        # Note: With forward-looking logic, the last shot can't be evaluated for time gap (no next shot)
+        # unless we assume 0 gap, which fillna(0) handles.
+        
         if not df.empty:
-            df.loc[0, "stop_flag"] = 0
+            # Optional: Force first shot logic? 
+            # With forward looking, the *first* shot stop status depends on the *second* shot time diff.
+            # That is valid. So we might NOT want to force overwrite row 0 stop_flag anymore,
+            # unless we stick to the rule "First shot of file is effectively a start up".
+            # Let's keep it consistent with previous logic to avoid confusion:
+            df.loc[0, "stop_flag"] = 0 
         
         df["stop_event"] = (df["stop_flag"] == 1) & (df["stop_flag"].shift(1, fill_value=0) == 0)
 
+        # --- Corrected adj_ct_sec LOGIC (Forward Looking) ---
         df['adj_ct_sec'] = df['ACTUAL CT']
-        df.loc[is_time_gap, 'adj_ct_sec'] = df['time_diff_sec']
+        
+        # If there is a time gap *after* this shot, this shot gets the penalty of the full wait time.
+        # BUT only if that wait time is actually longer than the cycle time (it usually is for stops)
+        # We override the current row's adj_ct with the NEXT row's time difference.
+        df.loc[is_time_gap, 'adj_ct_sec'] = df['next_shot_time_diff']
 
         # --- 3. Core Metric Calculations ---
         total_shots = len(df)
