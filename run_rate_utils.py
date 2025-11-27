@@ -1117,7 +1117,7 @@ def generate_excel_report(all_runs_data, tolerance):
             # --- Auto-adjust column widths & Hide Session ID ---
             for i, col_name in enumerate(df_run.columns):
                 if col_name == "SESSION ID":
-                    ws.set_column(i, i, None, {'hidden': True}) # Hide Session ID
+                    ws.set_column(i, i, None, None, {'hidden': True}) # Hide Session ID
                     continue
 
                 try:
@@ -1174,37 +1174,65 @@ def calculate_risk_scores(df_all):
         mttr = res.get('mttr_min', 0)
         mtbf = res.get('mtbf_min', 0)
         
-        # Trend Analysis (Split period in half)
-        mid_point = cutoff_date + (max_date - cutoff_date) / 2
-        df_early = df_period[df_period['shot_time'] < mid_point]
-        df_late = df_period[df_period['shot_time'] >= mid_point]
+        # --- NEW: Weekly Stability Calculation ---
+        # Group by week start date to handle empty weeks and proper sorting
+        weekly_stats = []
+        # Create a complete range of weeks for the last 4 weeks
+        all_weeks = pd.date_range(start=cutoff_date, end=max_date, freq='W-MON')
+        
+        # Ensure we have at least one week if the range is short
+        if len(all_weeks) == 0:
+             all_weeks = pd.to_datetime([cutoff_date])
+
+        # Group actual data by week
+        grouper = pd.Grouper(key='shot_time', freq='W-MON', closed='left', label='left')
+        weekly_groups = df_period.groupby(grouper)
+        
+        weekly_stabilities = []
+        for name, group in weekly_groups:
+             if not group.empty:
+                 w_calc = RunRateCalculator(group.copy(), 0.01, 2.0, analysis_mode='aggregate')
+                 weekly_stabilities.append(w_calc.results.get('stability_index', 0))
+             else:
+                 weekly_stabilities.append(0.0) # Assume 0 stability if no data in a week that exists in the grouper?
+                 # Actually, grouping by time might create empty groups if we reindex, 
+                 # but standard groupby only shows existing groups.
+        
+        # If we want to strictly enforce "Last 4 weeks" visualization even if empty:
+        # We can just use the weekly_stabilities list we got. 
+        # If it's too short (e.g. only 2 weeks of data), that's fine, we show what we have.
         
         trend_penalty = 0
         trend_factor = False
         
-        if not df_early.empty and not df_late.empty:
-            calc_early = RunRateCalculator(df_early, 0.01, 2.0)
-            calc_late = RunRateCalculator(df_late, 0.01, 2.0)
-            stab_early = calc_early.results.get('stability_index', 0)
-            stab_late = calc_late.results.get('stability_index', 0)
-            
-            if stab_late < (stab_early - 5): # 5% drop considered decline
-                trend_penalty = 20
-                trend_factor = True
+        if len(weekly_stabilities) >= 2:
+             # Simple Trend: Compare last week to average of previous, or just first vs last
+             # User requested: "showing up to the past 4 weeks"
+             
+             # Check for decline
+             if weekly_stabilities[-1] < weekly_stabilities[0] * 0.95:
+                 trend_penalty = 20
+                 trend_factor = True
 
         # Calculate Risk Score
         score = max(0, stability - trend_penalty)
         
         # Determine Primary Risk Factor (Priority order)
         risk_factor = "Stable"
+        details = f"Overall stability is {stability:.1f}%."
+
         if trend_factor:
             risk_factor = "Declining Trend"
+            details = "Declining stability" # User requested exact phrase
         elif mttr > 30: # Heuristic: >30m is high
              risk_factor = "High MTTR (>30m)"
+             details = f"Avg stop duration (MTTR) of {mttr:.1f} min is high."
         elif mtbf < 60: # Heuristic: <1h is frequent
              risk_factor = "Frequent Stops (MTBF <1h)"
+             details = f"Frequent stops (MTBF of {mtbf:.1f} min)."
         elif stability < 60:
              risk_factor = "Low Overall Stability"
+             details = f"Overall stability is critical ({stability:.1f}%)."
         
         period_str = f"{df_period['shot_time'].min():%d %b} - {df_period['shot_time'].max():%d %b}"
         
@@ -1213,8 +1241,8 @@ def calculate_risk_scores(df_all):
             'Analysis Period': period_str,
             'Risk Score': score,
             'Primary Risk Factor': risk_factor,
-            'Weekly Stability': f"{stability:.1f}%",
-            'Details': f"MTTR: {mttr:.1f}m, MTBF: {mtbf:.1f}m"
+            'Weekly Stability': ' → '.join([f"{s:.0f}%" for s in weekly_stabilities]),
+            'Details': details
         })
 
     return pd.DataFrame(risk_data).sort_values('Risk Score')
