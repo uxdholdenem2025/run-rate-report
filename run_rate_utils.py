@@ -1267,7 +1267,8 @@ def calculate_risk_scores(df_all, run_interval_hours=8):
         if row['Trend'] == "Declining":
             risk_score -= 20
         
-        primary_factor = "Low Stability"
+        # Default to "Stable" instead of "Low Stability"
+        primary_factor = "Stable"
         details = f"Overall stability is {row['Stability']:.1f}%."
         
         if row['Trend'] == "Declining":
@@ -1280,7 +1281,7 @@ def calculate_risk_scores(df_all, run_interval_hours=8):
             primary_factor = "Frequent Stops"
             details = f"Frequent stops (MTBF of {row['MTBF']:.1f} min)."
         elif row['Stability'] < 60:
-             risk_factor = "Low Overall Stability"
+             primary_factor = "Low Overall Stability"
              details = f"Overall stability is critical ({row['Stability']:.1f}%)."
         
         final_risk_data.append({
