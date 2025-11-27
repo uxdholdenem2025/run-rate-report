@@ -1175,16 +1175,8 @@ def calculate_risk_scores(df_all):
         mtbf = res.get('mtbf_min', 0)
         
         # --- NEW: Weekly Stability Calculation ---
-        # Group by week start date to handle empty weeks and proper sorting
-        weekly_stats = []
-        # Create a complete range of weeks for the last 4 weeks
-        all_weeks = pd.date_range(start=cutoff_date, end=max_date, freq='W-MON')
-        
-        # Ensure we have at least one week if the range is short
-        if len(all_weeks) == 0:
-             all_weeks = pd.to_datetime([cutoff_date])
-
-        # Group actual data by week
+        # Group actual data by week to determine trend
+        # We only include weeks that actually have data (Run Rate philosophy: no run = no data point, not 0% stability)
         grouper = pd.Grouper(key='shot_time', freq='W-MON', closed='left', label='left')
         weekly_groups = df_period.groupby(grouper)
         
@@ -1193,14 +1185,6 @@ def calculate_risk_scores(df_all):
              if not group.empty:
                  w_calc = RunRateCalculator(group.copy(), 0.01, 2.0, analysis_mode='aggregate')
                  weekly_stabilities.append(w_calc.results.get('stability_index', 0))
-             else:
-                 weekly_stabilities.append(0.0) # Assume 0 stability if no data in a week that exists in the grouper?
-                 # Actually, grouping by time might create empty groups if we reindex, 
-                 # but standard groupby only shows existing groups.
-        
-        # If we want to strictly enforce "Last 4 weeks" visualization even if empty:
-        # We can just use the weekly_stabilities list we got. 
-        # If it's too short (e.g. only 2 weeks of data), that's fine, we show what we have.
         
         trend_penalty = 0
         trend_factor = False
