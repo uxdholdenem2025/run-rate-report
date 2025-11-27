@@ -1165,6 +1165,11 @@ def calculate_risk_scores(df_all, run_interval_hours=8):
         # Determine analysis period (last 4 weeks of data present)
         max_date = df_tool['shot_time'].max()
         cutoff_date = max_date - timedelta(weeks=4)
+        
+        # Define start_date and end_date for reporting
+        start_date = cutoff_date
+        end_date = max_date
+        
         df_period = df_tool[df_tool['shot_time'] >= cutoff_date].copy()
         
         if df_period.empty: continue
