@@ -1129,3 +1129,92 @@ def generate_excel_report(all_runs_data, tolerance):
                     ws.set_column(i, i, len(str(col_name)) + 2)
 
     return output.getvalue()
+
+# ==============================================================================
+# --- 6. RISK ANALYSIS MODULE (ADDED) ---
+# ==============================================================================
+
+def calculate_risk_scores(df_all):
+    """
+    Calculates the Risk Scores for the Risk Tower.
+    
+    Logic:
+    1. Filter for the last 4 weeks of data per tool.
+    2. Calculate Base Stability Score (0-100).
+    3. Check for Trend (Split 4-week period into two halves).
+       - If stability dropped > 5%, apply penalty (20 points).
+    4. Determine Primary Risk Factor:
+       - Declining Trend
+       - High MTTR (> 30 min)
+       - Frequent Stops (MTBF < 60 min)
+       - Low Stability
+    """
+    risk_data = []
+    
+    if df_all.empty or 'tool_id' not in df_all.columns:
+        return pd.DataFrame()
+
+    for tool_id, df_tool in df_all.groupby('tool_id'):
+        df_tool = df_tool.sort_values('shot_time')
+        if df_tool.empty: continue
+        
+        # Determine analysis period (last 4 weeks of data present)
+        max_date = df_tool['shot_time'].max()
+        cutoff_date = max_date - timedelta(weeks=4)
+        df_period = df_tool[df_tool['shot_time'] >= cutoff_date].copy()
+        
+        if df_period.empty: continue
+
+        # Use Calculator for metrics
+        # tolerance/gap defaults: 0.01 (1%), 2.0s
+        calc = RunRateCalculator(df_period, 0.01, 2.0, analysis_mode='aggregate')
+        res = calc.results
+        
+        stability = res.get('stability_index', 0)
+        mttr = res.get('mttr_min', 0)
+        mtbf = res.get('mtbf_min', 0)
+        
+        # Trend Analysis (Split period in half)
+        mid_point = cutoff_date + (max_date - cutoff_date) / 2
+        df_early = df_period[df_period['shot_time'] < mid_point]
+        df_late = df_period[df_period['shot_time'] >= mid_point]
+        
+        trend_penalty = 0
+        trend_factor = False
+        
+        if not df_early.empty and not df_late.empty:
+            calc_early = RunRateCalculator(df_early, 0.01, 2.0)
+            calc_late = RunRateCalculator(df_late, 0.01, 2.0)
+            stab_early = calc_early.results.get('stability_index', 0)
+            stab_late = calc_late.results.get('stability_index', 0)
+            
+            if stab_late < (stab_early - 5): # 5% drop considered decline
+                trend_penalty = 20
+                trend_factor = True
+
+        # Calculate Risk Score
+        score = max(0, stability - trend_penalty)
+        
+        # Determine Primary Risk Factor (Priority order)
+        risk_factor = "Stable"
+        if trend_factor:
+            risk_factor = "Declining Trend"
+        elif mttr > 30: # Heuristic: >30m is high
+             risk_factor = "High MTTR (>30m)"
+        elif mtbf < 60: # Heuristic: <1h is frequent
+             risk_factor = "Frequent Stops (MTBF <1h)"
+        elif stability < 60:
+             risk_factor = "Low Overall Stability"
+        
+        period_str = f"{df_period['shot_time'].min():%d %b} - {df_period['shot_time'].max():%d %b}"
+        
+        risk_data.append({
+            'Tool ID': tool_id,
+            'Analysis Period': period_str,
+            'Risk Score': score,
+            'Primary Risk Factor': risk_factor,
+            'Weekly Stability': f"{stability:.1f}%",
+            'Details': f"MTTR: {mttr:.1f}m, MTBF: {mtbf:.1f}m"
+        })
+
+    return pd.DataFrame(risk_data).sort_values('Risk Score')
