@@ -1174,13 +1174,18 @@ def calculate_risk_scores(df_all, run_interval_hours=8):
         calc = RunRateCalculator(df_period, 0.01, 2.0, analysis_mode='aggregate')
         res = calc.results
         
+        # Get processed_df which contains time_diff_sec
+        df_processed = res.get('processed_df')
+        if df_processed is None or df_processed.empty:
+            continue
+        
         # Identify Runs based on the passed Gap Threshold
-        is_new_run = df_period['time_diff_sec'] > RUN_INTERVAL_SEC
-        df_period['run_id_risk'] = is_new_run.cumsum()
-        df_period['run_label'] = df_period['run_id_risk'].apply(lambda x: f'Run_{x}')
+        is_new_run = df_processed['time_diff_sec'] > RUN_INTERVAL_SEC
+        df_processed['run_id_risk'] = is_new_run.cumsum()
+        df_processed['run_label'] = df_processed['run_id_risk'].apply(lambda x: f'Run_{x}')
         
         # Calculate summary metrics by summing up individual runs (excludes large gaps)
-        run_summary_df = calculate_run_summaries(df_period, 0.05, 2.0)
+        run_summary_df = calculate_run_summaries(df_processed, 0.05, 2.0)
         
         if run_summary_df.empty:
             continue
@@ -1196,10 +1201,10 @@ def calculate_risk_scores(df_all, run_interval_hours=8):
         
         # --- Weekly Stability Calculation ---
         weekly_stats = []
-        df_period['week'] = df_period['shot_time'].dt.isocalendar().week
+        df_processed['week'] = df_processed['shot_time'].dt.isocalendar().week
         
         # Group by week but sort groups by time
-        weekly_groups = df_period.groupby('week')
+        weekly_groups = df_processed.groupby('week')
         sorted_weeks = []
         for w_num, g_df in weekly_groups:
             if not g_df.empty:
