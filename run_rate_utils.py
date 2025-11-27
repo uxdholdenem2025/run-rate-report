@@ -1134,38 +1134,52 @@ def generate_excel_report(all_runs_data, tolerance):
 # --- 6. RISK ANALYSIS MODULE (ADDED) ---
 # ==============================================================================
 
-def calculate_risk_scores(df_all):
+def calculate_risk_scores(df_all, run_interval_hours=8):
     """
-    Analyzes data for all tools, each within its own last 4-week window,
-    using 'aggregate of runs' logic for cleaner MTTR/Stability.
-    """
-    id_col = "tool_id"
-    initial_metrics = []
+    Calculates the Risk Scores for the Risk Tower.
     
-    RUN_INTERVAL_HOURS = 8
-    RUN_INTERVAL_SEC = RUN_INTERVAL_HOURS * 3600
+    Logic:
+    1. Filter for the last 4 weeks of data per tool.
+    2. Split data into PRODUCTION RUNS based on the 'run_interval_hours' gap threshold.
+       - Any gap > run_interval_hours is treated as a break between runs (not downtime).
+    3. Calculate Base Stability Score (0-100) using sum of run durations.
+    4. Check for Trend (Split 4-week period into two halves).
+       - If stability dropped > 5%, apply penalty (20 points).
+    5. Determine Primary Risk Factor:
+       - Declining Trend
+       - High MTTR (> 30 min)
+       - Frequent Stops (MTBF < 60 min)
+       - Low Stability
+    """
+    risk_data = []
+    
+    if df_all.empty or 'tool_id' not in df_all.columns:
+        return pd.DataFrame()
+    
+    RUN_INTERVAL_SEC = run_interval_hours * 3600
 
-    # First pass: Calculate metrics for each tool
-    for tool_id, df_tool in df_all.groupby(id_col):
-        if df_tool.empty or len(df_tool) < 10:
-            continue
+    for tool_id, df_tool in df_all.groupby('tool_id'):
+        df_tool = df_tool.sort_values('shot_time')
+        if df_tool.empty: continue
+        
+        # Determine analysis period (last 4 weeks of data present)
+        max_date = df_tool['shot_time'].max()
+        cutoff_date = max_date - timedelta(weeks=4)
+        df_period = df_tool[df_tool['shot_time'] >= cutoff_date].copy()
+        
+        if df_period.empty: continue
 
-        calc_prepare = RunRateCalculator(df_tool, 0.05, 2.0)
-        df_prepared = calc_prepare.results.get("processed_df")
-        if df_prepared is None or df_prepared.empty:
-            continue
-            
-        end_date = df_prepared['shot_time'].max()
-        start_date = end_date - timedelta(weeks=4)
-        df_period = df_prepared[(df_prepared['shot_time'] >= start_date) & (df_prepared['shot_time'] <= end_date)].copy() # Use .copy()
-
-        if df_period.empty or len(df_period) < 10:
-            continue
-
+        # Use Calculator for metrics
+        # tolerance/gap defaults: 0.01 (1%), 2.0s
+        calc = RunRateCalculator(df_period, 0.01, 2.0, analysis_mode='aggregate')
+        res = calc.results
+        
+        # Identify Runs based on the passed Gap Threshold
         is_new_run = df_period['time_diff_sec'] > RUN_INTERVAL_SEC
         df_period['run_id_risk'] = is_new_run.cumsum()
         df_period['run_label'] = df_period['run_id_risk'].apply(lambda x: f'Run_{x}')
         
+        # Calculate summary metrics by summing up individual runs (excludes large gaps)
         run_summary_df = calculate_run_summaries(df_period, 0.05, 2.0)
         
         if run_summary_df.empty:
@@ -1180,16 +1194,12 @@ def calculate_risk_scores(df_all):
         res_mttr = (downtime_sec / 60 / stop_events) if stop_events > 0 else 0
         res_mtbf = (production_time_sec / 60 / stop_events) if stop_events > 0 else (production_time_sec / 60)
         
+        # --- Weekly Stability Calculation ---
         weekly_stats = []
         df_period['week'] = df_period['shot_time'].dt.isocalendar().week
         
-        # Sort weeks numerically to get trend order correct
-        # Note: This simple sort works unless year wrap-around happens (e.g. week 52 -> 1).
-        # Better: Sort by min(shot_time) per week group.
-        
         # Group by week but sort groups by time
         weekly_groups = df_period.groupby('week')
-        # Create list of (first_timestamp, week_num, group_df)
         sorted_weeks = []
         for w_num, g_df in weekly_groups:
             if not g_df.empty:
@@ -1199,7 +1209,7 @@ def calculate_risk_scores(df_all):
         
         for _, week_num, df_week_full in sorted_weeks:
             df_week = df_week_full.copy()
-            # Must re-run interval logic for the weekly slice if gaps exist
+            # Must re-run interval logic for the weekly slice if gaps exist WITHIN the week slice
             is_new_run_week = df_week['time_diff_sec'] > RUN_INTERVAL_SEC
             df_week['run_id_week'] = is_new_run_week.cumsum()
             df_week['run_label'] = df_week['run_id_week'].apply(lambda x: f'WeekRun_{x}')
@@ -1212,12 +1222,11 @@ def calculate_risk_scores(df_all):
                 w_stability = (w_prod_time / w_tot_runtime * 100) if w_tot_runtime > 0 else 100.0
                 weekly_stats.append({'week': week_num, 'stability': w_stability})
             else:
-                # If a week exists in data but has 0 runs (unlikely if filtered), ignore or 0
-                pass
+                pass # Skip empty weeks
 
         
-        weekly_stabilities_df = pd.DataFrame(weekly_stats) # Already sorted by time above
-        weekly_stabilities = weekly_stabilities_df['stability'].tolist()
+        weekly_stabilities_df = pd.DataFrame(weekly_stats)
+        weekly_stabilities = weekly_stabilities_df['stability'].tolist() if not weekly_stabilities_df.empty else []
 
         trend = "Stable"
         if len(weekly_stabilities) > 1 and weekly_stabilities[-1] < weekly_stabilities[0] * 0.95:
@@ -1236,7 +1245,7 @@ def calculate_risk_scores(df_all):
     if not initial_metrics:
         return pd.DataFrame()
 
-    # --- Second pass: Determine risk factors by comparing against GLOBAL averages ---
+    # --- Second pass: Determine risk factors ---
     metrics_df = pd.DataFrame(initial_metrics)
     
     overall_mttr_mean = metrics_df['MTTR'].mean()
@@ -1256,11 +1265,14 @@ def calculate_risk_scores(df_all):
             details = "Declining stability"
         elif row['Stability'] < 70 and overall_mttr_mean > 0 and row['MTTR'] > (overall_mttr_mean * 1.2):
             primary_factor = "High MTTR"
-            details = f"Avg stop duration (MTTR) of {row['MTTR']:.1f} min is high (Avg: {overall_mttr_mean:.1f} min)."
+            details = f"Avg stop duration (MTTR) of {row['MTTR']:.1f} min is high."
         elif row['Stability'] < 70 and overall_mtbf_mean > 0 and row['MTBF'] < (overall_mtbf_mean * 0.8):
             primary_factor = "Frequent Stops"
-            details = f"Frequent stops (MTBF of {row['MTBF']:.1f} min) is low (Avg: {overall_mtbf_mean:.1f} min)."
-
+            details = f"Frequent stops (MTBF of {row['MTBF']:.1f} min)."
+        elif row['Stability'] < 60:
+             risk_factor = "Low Overall Stability"
+             details = f"Overall stability is critical ({row['Stability']:.1f}%)."
+        
         final_risk_data.append({
             'Tool ID': row['Tool ID'],
             'Analysis Period': row['Analysis Period'],
