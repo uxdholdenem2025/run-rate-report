@@ -652,7 +652,9 @@ def generate_detailed_analysis(analysis_df, overall_stability, overall_mttr, ove
     stability_class = "good (above 70%)" if overall_stability > 70 else "needs improvement (50-70%)" if overall_stability > 50 else "poor (below 50%)"
     overall_summary = f"The overall stability for this period is <strong>{overall_stability:.1f}%</strong>, which is considered <strong>{stability_class}</strong>."
 
-    predictive_insight = ""
+    # FIX: Set a default message so it's not empty if there's only 1 run/period
+    predictive_insight = "Insufficient data points (less than 2 periods) to establish a predictive trend."
+
     analysis_df_clean = analysis_df.dropna(subset=['stability'])
     if len(analysis_df_clean) > 1:
         volatility_std = analysis_df_clean['stability'].std()
