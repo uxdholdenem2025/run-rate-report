@@ -72,9 +72,10 @@ def render_risk_tower(df_all_tools):
     st.dataframe(display_df.style.apply(style_risk, axis=1).format({'Risk Score': '{:.0f}'}), use_container_width=True, hide_index=True)
 
 
-def render_trends_tab(df_tool, tolerance, downtime_gap_tolerance):
+def render_trends_tab(df_tool, tolerance, downtime_gap_tolerance, run_interval_hours):
     """Renders the new Trends Analysis tab."""
     st.header("Historical Performance Trends")
+    st.info(f"Trends are calculated using 'Run-Based' logic. Gaps larger than {run_interval_hours} hours are excluded from the timeline to provide accurate stability metrics.")
     
     col_ctrl, _ = st.columns([1, 3])
     with col_ctrl:
@@ -107,32 +108,58 @@ def render_trends_tab(df_tool, tolerance, downtime_gap_tolerance):
         grouper = df_tool.groupby(df_tool['shot_time'].dt.to_period('M'))
         period_name = "Month"
 
-    # 2. Iterate and Calculate Metrics
+    # 2. Iterate and Calculate Metrics (Run-Based)
     for period, df_period in grouper:
         if df_period.empty: continue
         
-        calc = rr_utils.RunRateCalculator(df_period, tolerance, downtime_gap_tolerance, analysis_mode='aggregate')
-        res = calc.results
+        # A. Pre-process to identify runs within this period
+        calc_prep = rr_utils.RunRateCalculator(df_period, tolerance, downtime_gap_tolerance, analysis_mode='aggregate')
+        df_p = calc_prep.results.get("processed_df", pd.DataFrame())
         
+        if df_p.empty: continue
+
+        # Split into runs
+        is_new_run = df_p['time_diff_sec'] > (run_interval_hours * 3600)
+        df_p['run_label'] = is_new_run.cumsum()
+        
+        # B. Calculate summaries per run
+        run_summaries = rr_utils.calculate_run_summaries(df_p, tolerance, downtime_gap_tolerance)
+        
+        if run_summaries.empty: continue
+
+        # C. Aggregate totals for the period
+        total_runtime = run_summaries['total_runtime_sec'].sum()
+        prod_time = run_summaries['production_time_sec'].sum()
+        downtime = run_summaries['downtime_sec'].sum()
+        stops = run_summaries['stops'].sum()
+        total_shots = run_summaries['total_shots'].sum()
+        normal_shots = run_summaries['normal_shots'].sum()
+
+        # D. Calculate derived metrics
+        stability = (prod_time / total_runtime * 100) if total_runtime > 0 else 0
+        efficiency = (normal_shots / total_shots * 100) if total_shots > 0 else 0
+        mttr = (downtime / 60 / stops) if stops > 0 else 0
+        mtbf = (prod_time / 60 / stops) if stops > 0 else (prod_time / 60)
+
         # Format Period Label
         if trend_freq == "Daily":
             label = period.strftime('%Y-%m-%d')
         elif trend_freq == "Weekly":
-            label = f"W{period.week} {period.year}" # e.g. W42 2024
+            label = f"W{period.week} {period.year}" 
         else:
             label = period.strftime('%B %Y')
 
         trend_data.append({
             period_name: label,
             'SortKey': period if trend_freq == "Daily" else period.start_time,
-            'Stability Index (%)': res.get('stability_index', 0),
-            'Efficiency (%)': res.get('efficiency', 0) * 100,
-            'MTTR (min)': res.get('mttr_min', 0),
-            'MTBF (min)': res.get('mtbf_min', 0),
-            'Total Shots': res.get('total_shots', 0),
-            'Stop Events': res.get('stop_events', 0),
-            'Production Time (h)': res.get('production_time_sec', 0) / 3600,
-            'Downtime (h)': res.get('downtime_sec', 0) / 3600
+            'Stability Index (%)': stability,
+            'Efficiency (%)': efficiency,
+            'MTTR (min)': mttr,
+            'MTBF (min)': mtbf,
+            'Total Shots': total_shots,
+            'Stop Events': stops,
+            'Production Time (h)': prod_time / 3600,
+            'Downtime (h)': downtime / 3600
         })
     
     if not trend_data:
@@ -140,7 +167,7 @@ def render_trends_tab(df_tool, tolerance, downtime_gap_tolerance):
         return
 
     # 3. Create DataFrame
-    df_trends = pd.DataFrame(trend_data).sort_values('SortKey', ascending=False) # Newest first
+    df_trends = pd.DataFrame(trend_data).sort_values('SortKey', ascending=False)
     df_trends = df_trends.drop(columns=['SortKey'])
     
     # 4. Styling
@@ -758,7 +785,7 @@ def run_run_rate_ui():
     
     with tab3:
         if not df_for_dashboard.empty:
-            render_trends_tab(df_for_dashboard, tolerance, downtime_gap_tolerance)
+            render_trends_tab(df_for_dashboard, tolerance, downtime_gap_tolerance, run_interval_hours)
         else:
             st.info("Select a specific Tool ID from the sidebar to view trends.")
 
