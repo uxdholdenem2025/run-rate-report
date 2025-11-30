@@ -691,7 +691,7 @@ def generate_detailed_analysis(analysis_df, overall_stability, overall_mttr, ove
         best_worst_analysis = (f"The best performance was during <strong>{best_period_label}</strong> (Stability: {best_performer['stability']:.1f}%), "
                                f"while the worst was during <strong>{worst_period_label}</strong> (Stability: {worst_performer['stability']:.1f}%). "
                                f"The key difference was the impact of stoppages: the worst period had {int(worst_performer['stops'])} stops with an average duration of {worst_performer.get('mttr', 0):.1f} min, "
-                               f"compared to {int(best_performer['stops'])} stops during the best period.")
+                               f"compared to {int(best_performer['stops'])} stops with an average duration of {best_performer.get('mttr', 0):.1f} min during the best period.")
 
     pattern_insight = ""
     if not analysis_df_clean.empty and analysis_df_clean['stops'].sum() > 0:
@@ -1282,9 +1282,12 @@ def calculate_risk_scores(df_all, run_interval_hours=8):
         elif row['Stability'] < 70 and overall_mtbf_mean > 0 and row['MTBF'] < (overall_mtbf_mean * 0.8):
             primary_factor = "Frequent Stops"
             details = f"Frequent stops (MTBF of {row['MTBF']:.1f} min)."
-        elif row['Stability'] < 60:
-             primary_factor = "Low Overall Stability"
+        elif row['Stability'] <= 50:
+             primary_factor = "Critical Stability"
              details = f"Overall stability is critical ({row['Stability']:.1f}%)."
+        elif row['Stability'] <= 70:
+             primary_factor = "Moderate Stability"
+             details = f"Stability is below target ({row['Stability']:.1f}%)."
         
         final_risk_data.append({
             'Tool ID': row['Tool ID'],
