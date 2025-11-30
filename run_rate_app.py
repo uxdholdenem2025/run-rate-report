@@ -755,7 +755,7 @@ def run_run_rate_ui():
     # --- GLOBAL ANALYSIS PARAMETERS (For Dashboard & Trends) ---
     st.sidebar.title("Analysis Parameters ⚙️")
     with st.sidebar.expander("Configure Metrics", expanded=True):
-        tolerance = st.slider("Tolerance Band (% of Mode CT)", 0.01, 0.50, 0.25, 0.01, key="rr_tolerance", help="Defines the ±% around Mode CT.")
+        tolerance = st.slider("Tolerance Band (% of Mode CT)", 0.01, 0.50, 0.05, 0.01, key="rr_tolerance", help="Defines the ±% around Mode CT.")
         downtime_gap_tolerance = st.slider("Downtime Gap Tolerance (sec)", 0.0, 5.0, 2.0, 0.5, key="rr_downtime_gap", help="Defines the minimum idle time between shots to be considered a stop.")
         run_interval_hours = st.slider("Run Interval Threshold (hours)", 1, 24, 8, 1, key="rr_run_interval", help="Defines the max hours between shots before a new Production Run is identified.")
 
